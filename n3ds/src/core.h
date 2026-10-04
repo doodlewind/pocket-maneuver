@@ -1,6 +1,9 @@
-/* The interface of core/ (Rust): the simulation and the device-independent
- * runtime. core/src/lib.rs defines these functions; mh_sizes lets main.c check
- * that the two sides agree on every layout. */
+/* The interface of core/ (Rust): the simulation, the device-independent
+ * runtime and the renderer's side of the interface (ui/). core/src/lib.rs
+ * defines these functions; mh_sizes lets main.c check that the two sides
+ * agree on every layout. The library also defines the svcwire_* functions
+ * PocketJS's guest driver calls (svcwire.h): the guest's service channel ends
+ * there, in the process. */
 #ifndef MANEUVER_CORE_H
 #define MANEUVER_CORE_H
 
@@ -19,7 +22,8 @@
 #define MH_SKY_INDICES 960
 #define MH_SUN_VERTS (2 * (MH_FAN + 1))
 
-/* Simulation buttons (maneuver_sim::sim::btn) and the two the loop takes. */
+/* Simulation buttons (maneuver_sim::sim::btn), and the two that keep the game's
+ * flow while no interface is on the screen. */
 #define MH_HOOK_L 1u
 #define MH_HOOK_R 2u
 #define MH_GAS 4u
@@ -104,12 +108,9 @@ typedef struct {
   float pos[3];
 } MhHudVertex;
 
-typedef struct {
-  float player[3], yaw, speed, gas;
-  uint32_t kills, giants, ticks, auto_on;
-  float bounds;
-  uint32_t done;
-} MhMap;
+/* mh_stage: what the interface shows while there is no game. */
+#define MH_STAGE_LOADING 0u
+#define MH_STAGE_ERROR 1u
 
 void mh_sizes(MhSizes *out);
 /* Null, or a message. The buffers may be freed afterwards. */
@@ -124,9 +125,20 @@ const MhGiant *mh_giants(void);
 void mh_giant_pose(uint32_t index, float sink, float vis, float *rows, float *light);
 void mh_scout_pose(float *rows, float *light);
 void mh_actors(uint32_t ticks, MhColorVertex *cloak, MhColorVertex *rope, MhColorVertex *disc, MhFrame *out);
-uint32_t mh_hud(MhHudVertex *verts, uint32_t cap, const float *uv_scale, const float *uv_offset, const MhPerf *perf);
+/* The marks on the world (where a wire would bite, the nearest target, the streaks of speed), four vertices a quad.
+ * `perf` goes into the statistics line the interface shows. */
+uint32_t mh_marks(MhHudVertex *verts, uint32_t cap, const float *uv_scale, const float *uv_offset, const MhPerf *perf);
 void mh_audio(int16_t *out, uint32_t frames, float rate);
 uint32_t mh_status(char *out, uint32_t cap, const MhPerf *perf, const char *extra, uint32_t extra_len);
-uint32_t mh_map(MhMap *out, float *giant_xz_alive, uint32_t cap);
+/* Before the game exists: the loading step, or why the start failed. The first mh_step replaces it with the game's flow. */
+void mh_stage(uint32_t stage, const char *message, uint32_t len);
+/* The preferences read from storage at the start, and what the interface asked to have stored since the last call
+ * (NUL-terminated; 0 when there is nothing). */
+void mh_prefs_stored(const char *text, uint32_t len);
+uint32_t mh_prefs_take(char *out, uint32_t cap);
+/* The sound setting is on and the game is not paused. */
+uint32_t mh_audible(void);
+/* A guest holds the interface's channel. */
+uint32_t mh_interface_open(void);
 
 #endif
