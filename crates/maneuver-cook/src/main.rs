@@ -353,7 +353,7 @@ fn cook_handheld(c: Cooked, target: handheld::Target, h: &handheld::Handheld) ->
     let (profile, ir) = (c.profile, c.ir);
     let format = handheld::format_of(&profile.texture.format)?;
     let psp = target == handheld::Target::Psp;
-    if psp != matches!(format, pack::tex_format::PSP_DXT1 | pack::tex_format::PSP_5650) {
+    if psp != matches!(format, pack::tex_format::PSP_DXT1 | pack::tex_format::PSP_5650 | pack::tex_format::PSP_T8) {
         return Err(format!("profile {}: texture format {} is not one of target {}", profile.name, profile.texture.format, profile.target));
     }
 

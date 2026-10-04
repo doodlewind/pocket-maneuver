@@ -162,12 +162,16 @@ pub struct Actors {
     pub vis: f32,
     /// Whether the last ray toward the sun was clear.
     lit: bool,
+    /// Per giant: whether buildings hide it from the eye, as of its last test.
+    hidden: Vec<bool>,
+    /// The giant the next frame tests.
+    probe: usize,
 }
 
 impl Actors {
     pub fn new(sim: &Sim, scene: &Scene) -> Actors {
         let titan_vis = sim.dummies.iter().map(|d| if sim.world.raycast(d.pos + v3(0.0, d.height * 0.7, 0.0) + scene.sun_dir * (d.height * 0.3), scene.sun_dir, 500.0, mask::ALL).is_none() { 1.0 } else { 0.25 }).collect();
-        Actors { titan_vis, puffs: [Puff { pos: V3::ZERO, vel: V3::ZERO, age: 9.0, life: 0.7, size: 1.0 }; PUFFS], next_puff: 0, vis: 1.0, lit: true }
+        Actors { titan_vis, puffs: [Puff { pos: V3::ZERO, vel: V3::ZERO, age: 9.0, life: 0.7, size: 1.0 }; PUFFS], next_puff: 0, vis: 1.0, lit: true, hidden: alloc::vec![false; sim.dummies.len()], probe: 0 }
     }
 
     fn puff(&mut self, pos: V3, vel: V3, life: f32, size: f32) {
@@ -273,8 +277,32 @@ impl Actors {
         Frame { rope_quads: quads as u32, discs: discs as u32 }
     }
 
-    /// The giants in view and in range, nearest first.
-    pub fn giants(&self, sim: &Sim, scene: &Scene, planes: &[[f32; 4]; 6], eye: V3, out: &mut Vec<Giant>) {
+    /// Whether the town hides giant `i` from `eye`: rays to its head, chest and hip are all blocked.
+    fn occluded(sim: &Sim, i: usize, eye: V3) -> bool {
+        let d = &sim.dummies[i];
+        [0.95, 0.6, 0.25].iter().all(|k| {
+            let to = d.pos + v3(0.0, d.height * k, 0.0) - eye;
+            let len = to.len();
+            len > 2.0 && sim.world.raycast(eye, to * (1.0 / len), len - 1.5, mask::ALL).is_some()
+        })
+    }
+
+    /// The giants in view and in range, nearest first. One giant beyond the near distance is tested
+    /// against the town each frame, in turn; one that is hidden is not drawn until a later test sees it.
+    pub fn giants(&mut self, sim: &Sim, scene: &Scene, planes: &[[f32; 4]; 6], eye: V3, out: &mut Vec<Giant>) {
+        let n = sim.dummies.len();
+        for step in 1..=n {
+            let i = (self.probe + step) % n;
+            let d = &sim.dummies[i];
+            let dist = (d.pos + v3(0.0, d.height * 0.5, 0.0) - eye).len();
+            if dist > scene.h.titan_far || dist < scene.h.titan_near {
+                self.hidden[i] = false;
+                continue;
+            }
+            self.hidden[i] = Self::occluded(sim, i, eye);
+            self.probe = i;
+            break;
+        }
         for (i, d) in sim.dummies.iter().enumerate() {
             let since = sim.tick.wrapping_sub(d.cut_tick) as f32 / 60.0;
             if !d.alive && since > 9.0 {
@@ -283,7 +311,7 @@ impl Actors {
             let dist = (d.pos + v3(0.0, d.height * 0.5, 0.0) - eye).len();
             // Standing or lying, the body fits in a box one height to each side.
             let (lo, hi) = ([d.pos.x - d.height, d.pos.y - 1.0, d.pos.z - d.height], [d.pos.x + d.height, d.pos.y + d.height * 1.1, d.pos.z + d.height]);
-            if dist > scene.h.titan_far || !mat::visible(planes, &lo, &hi) {
+            if dist > scene.h.titan_far || !mat::visible(planes, &lo, &hi) || (self.hidden[i] && dist > scene.h.titan_near) {
                 continue;
             }
             // A fallen giant sinks away.

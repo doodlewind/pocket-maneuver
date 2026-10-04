@@ -47,7 +47,7 @@ fn psp_main() {
     unsafe {
         if let Err(e) = run() {
             psp::dprintln!("Could not start: {}", e);
-            store::note(&format!("{{\"target\":\"psp\",\"stage\":\"failed\",\"error\":\"{e}\"}}"));
+            store::note(&format!("{{\"target\":\"psp\",\"stage\":\"failed\",\"error\":\"{e}\",\"code\":\"{:08x}\"}}", core::ptr::addr_of!(store::LAST_CODE).read() as u32));
             loop {
                 sceKernelDelayThread(1_000_000);
             }
@@ -198,10 +198,10 @@ unsafe fn run() -> Result<(), &'static str> {
         gpu_ms = gpu_ms * 0.9 + ms(t1) * 0.1;
         if game.frame == shot_at.wrapping_add(1) {
             // The frame just drawn, out of video memory first: host I/O cannot take a video memory address.
-            let vram = sceGeEdramGetAddr().add(drawing * 512 * 272 * 4);
-            let mut pixels = alloc::vec![0u8; 480 * 272 * 4];
+            let vram = sceGeEdramGetAddr().add(drawing * gfx::FB_BYTES);
+            let mut pixels = alloc::vec![0u8; 480 * 272 * 2];
             for y in 0..272 {
-                core::ptr::copy_nonoverlapping(vram.add(y * 512 * 4), pixels.as_mut_ptr().add(y * 480 * 4), 480 * 4);
+                core::ptr::copy_nonoverlapping(vram.add(y * 512 * 2), pixels.as_mut_ptr().add(y * 480 * 2), 480 * 2);
             }
             store::write_shot(&pixels);
         }

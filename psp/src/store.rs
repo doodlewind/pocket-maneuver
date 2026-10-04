@@ -138,6 +138,8 @@ static mut FD: SceUid = SceUid(-1);
 static mut NEAR_BASE: u32 = 0;
 static mut WAKE: SceUid = SceUid(-1);
 static mut HOST: bool = false;
+/// The kernel's answer when a start-up call fails, for the failure record.
+pub static mut LAST_CODE: i32 = 0;
 pub static LOADED: AtomicU32 = AtomicU32::new(0);
 pub static LOADED_BYTES: AtomicU32 = AtomicU32::new(0);
 
@@ -167,7 +169,8 @@ pub unsafe fn start(pack: &PackFile, largest: usize) -> Result<(), &'static str>
     WAKE = sceKernelCreateSema(b"maneuver_read\0".as_ptr(), 0, 0, 64, ptr::null_mut());
     let id = sceKernelCreateThread(b"maneuver_read\0".as_ptr(), reader, 40, 32 * 1024, ThreadAttributes::USER, ptr::null_mut());
     if id.0 < 0 || WAKE.0 < 0 {
-        return Err("the reader thread did not start");
+        LAST_CODE = if id.0 < 0 { id.0 } else { WAKE.0 };
+        return Err(if id.0 < 0 { "the reader thread was not created" } else { "the reader's semaphore was not created" });
     }
     sceKernelStartThread(id, 0, ptr::null_mut());
     Ok(())

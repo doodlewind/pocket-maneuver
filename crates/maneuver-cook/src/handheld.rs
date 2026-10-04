@@ -93,19 +93,10 @@ pub struct Lowered {
     /// Device vertex bytes.
     pub vtx: Vec<u8>,
     pub idx: Vec<u16>,
-    /// One byte per large triangle.
+    /// The mesh's bytes in `CLIP` (empty without large triangles).
     pub clip: Vec<u8>,
-}
-
-fn morton(x: u32, z: u32) -> u32 {
-    let spread = |mut v: u32| {
-        v &= 0x3ff;
-        v = (v | (v << 8)) & 0x00ff_00ff;
-        v = (v | (v << 4)) & 0x0f0f_0f0f;
-        v = (v | (v << 2)) & 0x3333_3333;
-        (v | (v << 1)) & 0x5555_5555
-    };
-    spread(x) | (spread(z) << 1)
+    /// Large triangles.
+    pub big: usize,
 }
 
 /// Splits the parts of one cell and level by atlas page and quantizes each into a device mesh.
@@ -195,46 +186,75 @@ pub fn lower(parts: &[(&Mesh, &Vec<[u8; 4]>)], kind: u32, cx: i32, cz: i32, h: &
                 Target::Pica => vtx.extend_from_slice(pack::bytes_of(&PicaVertex { uv: [uv[0] as i16, uv[1] as i16], color: *color, pos })),
             }
         }
-        // Small triangles first; large ones after, the largest first, so a runtime at a given distance
-        // tests a prefix and draws the rest as they are.
+        // Small triangles first; large ones after, in groups of neighbours (at most 4 × 4 over the mesh,
+        // no finer than 16 m), the largest first inside a group. A runtime measures its distance to each
+        // group and tests the prefix of the group that could reach the guard band from there.
+        let p3 = |i: u32| {
+            let v = b.src[i as usize].0;
+            [v[0], v[1], v[2]]
+        };
         let edge = |t: &[u32; 3]| {
-            let p = |i: u32| {
-                let v = b.src[i as usize].0;
-                [v[0], v[1], v[2]]
-            };
             let d = |a: [f32; 3], c: [f32; 3]| ((a[0] - c[0]).powi(2) + (a[1] - c[1]).powi(2) + (a[2] - c[2]).powi(2)).sqrt();
-            let (a, c, e) = (p(t[0]), p(t[1]), p(t[2]));
+            let (a, c, e) = (p3(t[0]), p3(t[1]), p3(t[2]));
             d(a, c).max(d(c, e)).max(d(e, a))
         };
+        let size = ((max[0] - min[0]).max(max[2] - min[2]) / 4.0).max(16.0);
         let mut small = Vec::new();
-        let mut big: Vec<(u32, f32, [u32; 3])> = Vec::new();
+        let mut big: Vec<((u32, u32), f32, [u32; 3])> = Vec::new();
         for t in &b.tris {
             let e = edge(t);
             if h.big_edge > 0.0 && e > h.big_edge {
-                let v = b.src[t[0] as usize].0;
-                let key = morton(((v[0] - min[0]) / (max[0] - min[0]) * 1023.0) as u32, ((v[2] - min[2]) / (max[2] - min[2]) * 1023.0) as u32);
+                let (a, c, d) = (p3(t[0]), p3(t[1]), p3(t[2]));
+                let centre = [(a[0] + c[0] + d[0]) / 3.0, (a[2] + c[2] + d[2]) / 3.0];
+                let key = (((centre[1] - min[2]) / size) as u32, ((centre[0] - min[0]) / size) as u32);
                 big.push((key, e, *t));
             } else {
                 small.push(*t);
             }
         }
         let code_of = |e: f32| ((e * CLIP_REACH / 2.0).ceil() as u32).clamp(1, 255) as u8;
-        big.sort_by_key(|t| (255 - code_of(t.1), t.0));
+        big.sort_by_key(|t| (t.0, 255 - code_of(t.1)));
         let mut idx: Vec<u16> = small.iter().flatten().map(|&i| i as u16).collect();
         let big_first = idx.len() as u32;
-        let mut clip = Vec::with_capacity(big.len());
+        let mut groups: Vec<pack::ClipGroup> = Vec::new();
+        let mut codes = Vec::with_capacity(big.len());
         let mut clip_radius = 0.0f32;
-        for (_, e, t) in &big {
+        let mut last = None;
+        for (key, e, t) in &big {
+            if last != Some(*key) {
+                groups.push(pack::ClipGroup { min: [f32::MAX; 3], max: [f32::MIN; 3], tris: 0 });
+                last = Some(*key);
+            }
+            let g = groups.last_mut().unwrap();
+            for &i in t {
+                let p = p3(i);
+                for a in 0..3 {
+                    g.min[a] = g.min[a].min(p[a]);
+                    g.max[a] = g.max[a].max(p[a]);
+                }
+            }
+            g.tris += 1;
             idx.extend(t.iter().map(|&i| i as u16));
             let code = code_of(*e);
-            clip.push(code);
+            codes.push(code);
             clip_radius = clip_radius.max(if code == 255 { 1e9 } else { code as f32 * 2.0 });
         }
+        let mut clip = Vec::new();
+        if !big.is_empty() {
+            clip.extend_from_slice(&(groups.len() as u32).to_le_bytes());
+            clip.extend_from_slice(pack::slice_bytes(&groups));
+            clip.extend_from_slice(&codes);
+            while clip.len() % 4 != 0 {
+                clip.push(0);
+            }
+        }
+        let big = big.len();
         out.push(Lowered {
             rec: HandMesh { kind, cx, cz, page: page as u32, vtx_first: 0, vtx_count: b.src.len() as u32, idx_first: 0, idx_count: idx.len() as u32, big_first, clip_first: 0, clip_radius, min, max, pad: 0 },
             vtx,
             idx,
             clip,
+            big,
         });
     }
     Ok(out)
@@ -330,9 +350,62 @@ pub fn format_of(name: &str) -> Result<u32, String> {
     Ok(match name {
         "psp-dxt1" => tex_format::PSP_DXT1,
         "psp-5650" => tex_format::PSP_5650,
+        "psp-t8" => tex_format::PSP_T8,
         "pica-rgb565" => tex_format::PICA_RGB565,
-        other => return Err(format!("texture format {other:?} is not one of psp-dxt1, psp-5650, pica-rgb565")),
+        other => return Err(format!("texture format {other:?} is not one of psp-dxt1, psp-5650, psp-t8, pica-rgb565")),
     })
+}
+
+/// A 256-colour palette for a page by median cut over its largest level, and a table from
+/// 5-bit-per-channel colour to the nearest palette entry.
+fn palette(rgba: &[u8]) -> (Vec<[u8; 3]>, Vec<u8>) {
+    let bin = |p: &[u8]| ((p[0] as usize >> 3) << 10) | ((p[1] as usize >> 3) << 5) | (p[2] as usize >> 3);
+    let mut count = vec![0u32; 32768];
+    for p in rgba.chunks_exact(4) {
+        count[bin(p)] += 1;
+    }
+    let used: Vec<u16> = (0..32768u32).filter(|&i| count[i as usize] > 0).map(|i| i as u16).collect();
+    let channel = |i: u16, c: usize| ((i >> (10 - 5 * c)) & 31) as u32;
+    // Boxes of used bins; split the box with the most pixels along its longest channel at the pixel median.
+    let mut boxes: Vec<Vec<u16>> = vec![used];
+    while boxes.len() < 256 {
+        let Some(at) = (0..boxes.len()).filter(|&b| boxes[b].len() > 1).max_by_key(|&b| boxes[b].iter().map(|&i| count[i as usize] as u64).sum::<u64>()) else { break };
+        let mut b = boxes.swap_remove(at);
+        let range = |c: usize| {
+            let (lo, hi) = b.iter().fold((31, 0), |(lo, hi), &i| (lo.min(channel(i, c)), hi.max(channel(i, c))));
+            hi - lo
+        };
+        let c = (0..3).max_by_key(|&c| range(c)).unwrap();
+        b.sort_by_key(|&i| channel(i, c));
+        let total: u64 = b.iter().map(|&i| count[i as usize] as u64).sum();
+        let mut acc = 0u64;
+        let mut cut = 1;
+        for (k, &i) in b.iter().enumerate() {
+            acc += count[i as usize] as u64;
+            if acc * 2 >= total {
+                cut = (k + 1).clamp(1, b.len() - 1);
+                break;
+            }
+        }
+        let tail = b.split_off(cut);
+        boxes.push(b);
+        boxes.push(tail);
+    }
+    let colors: Vec<[u8; 3]> = boxes
+        .iter()
+        .map(|b| {
+            let n: u64 = b.iter().map(|&i| count[i as usize] as u64).sum::<u64>().max(1);
+            [0, 1, 2].map(|c| (b.iter().map(|&i| (channel(i, c) * 8 + 4) as u64 * count[i as usize] as u64).sum::<u64>() / n) as u8)
+        })
+        .collect();
+    let nearest: Vec<u8> = (0..32768u32)
+        .into_par_iter()
+        .map(|i| {
+            let p = [0, 1, 2].map(|c| (channel(i as u16, c) * 8 + 4) as i32);
+            (0..colors.len()).min_by_key(|&k| (0..3).map(|c| (colors[k][c] as i32 - p[c]).pow(2)).sum::<i32>()).unwrap_or(0) as u8
+        })
+        .collect();
+    (colors, nearest)
 }
 
 /// `TexHeader` of one page, then every page's levels.
@@ -352,7 +425,12 @@ pub fn atlas(rgba: &[u8], w: usize, h: usize, edges: &[usize], page: [u32; 2], f
             return Err(format!("the boundary of atlas page {p} cuts a texture strip"));
         }
     }
-    let min_side = if format == tex_format::PSP_DXT1 { 4 } else { 8 };
+    // A swizzled block is 16 bytes by 8 rows: 16 texels across at one byte each.
+    let min_side = match format {
+        tex_format::PSP_DXT1 => 4,
+        tex_format::PSP_T8 => 16,
+        _ => 8,
+    };
     let mut levels = 0;
     while levels < max_mips && (pw >> levels) >= min_side && (ph >> levels) >= min_side {
         levels += 1;
@@ -360,11 +438,30 @@ pub fn atlas(rgba: &[u8], w: usize, h: usize, edges: &[usize], page: [u32; 2], f
     let mips: Vec<(Vec<u8>, usize, usize)> = (0..levels).into_par_iter().map(|l| crate::texture::mip(rgba, w, h, edges, base + l)).collect();
     let mut out = pack::bytes_of(&TexHeader { width: pw as u32, height: ph as u32, mips: levels, format }).to_vec();
     for p in 0..pages {
+        let indexed = if format == tex_format::PSP_T8 {
+            let (colors, nearest) = palette(&mips[0].0[p * ph * pw * 4..(p + 1) * ph * pw * 4]);
+            while out.len() % 16 != 0 {
+                out.push(0);
+            }
+            for k in 0..256 {
+                let c = colors.get(k).copied().unwrap_or([0, 0, 0]);
+                out.extend_from_slice(&[c[0], c[1], c[2], 255]);
+            }
+            Some(nearest)
+        } else {
+            None
+        };
         for (l, (px, mw, _)) in mips.iter().enumerate() {
             let (lw, lh) = (pw >> l, ph >> l);
             debug_assert_eq!(*mw, lw);
             let rows = &px[p * lh * lw * 4..(p + 1) * lh * lw * 4];
-            let bytes = encode(format, rows, lw, lh)?;
+            let bytes = match &indexed {
+                Some(nearest) => {
+                    let idx: Vec<u8> = rows.chunks_exact(4).map(|t| nearest[((t[0] as usize >> 3) << 10) | ((t[1] as usize >> 3) << 5) | (t[2] as usize >> 3)]).collect();
+                    psp_swizzle(&idx, lw, lh)
+                }
+                None => encode(format, rows, lw, lh)?,
+            };
             debug_assert_eq!(bytes.len(), tex_format::level_bytes(format, lw as u32, lh as u32));
             while out.len() % 16 != 0 {
                 out.push(0);
@@ -662,7 +759,7 @@ pub fn assemble(lowered: Vec<Vec<Lowered>>, stream_near: bool, vertex_bytes: usi
             }
             g.tris[rec.kind as usize] += m.idx.len() / 3;
             g.count[rec.kind as usize] += 1;
-            g.big += m.clip.len();
+            g.big += m.big;
             g.max_verts = g.max_verts.max(rec.vtx_count as usize);
             recs.push(rec);
         }

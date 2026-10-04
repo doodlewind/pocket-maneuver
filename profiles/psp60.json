@@ -2,7 +2,7 @@
   "name": "psp60",
   "target": "psp",
   "presentation": { "render": [480, 272], "display": [480, 272], "targetFps": 60 },
-  "texture": { "format": "psp-dxt1", "maxMips": 7 },
+  "texture": { "format": "psp-t8", "maxMips": 6 },
   "bake": { "sunRays": 4, "sunSpread": 0.02, "aoRays": 16, "aoReach": 14.0 },
   "limits": { "maxMeshVertices": 65535, "maxPackBytes": 33554432 },
   "font": { "sizes": [10, 13, 22], "atlas": [256, 256] },

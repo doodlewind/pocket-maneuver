@@ -22,12 +22,12 @@
 //! | ------ | -------- |
 //! | `META` | JSON, for tools; the runtime does not read it |
 //! | `HSCN` | `HandScene`: scene constants and the pack's layout switches |
-//! | `TEX0` | `TexHeader`, then per atlas page its levels, largest first, each padded to 16 bytes |
+//! | `TEX0` | `TexHeader`, then per atlas page (its palette, for an indexed format, and) its levels, largest first, each padded to 16 bytes |
 //! | `HMSH` | `HandMesh` table |
 //! | `VTX0` | resident vertices (`PspVertex` or `PicaVertex`) |
 //! | `IDX0` | resident `u16` indices |
 //! | `NEAR` | PSP: per 64 m cell, the vertices then the indices of its detailed meshes, read on demand |
-//! | `CLIP` | PSP: one byte per large triangle, the distance (× 2 m) inside which the CPU clips it |
+//! | `CLIP` | PSP: per mesh, its large triangles' groups (`ClipGroup`) and one byte per large triangle, the distance (× 2 m) inside which the CPU clips it |
 //! | `MODL` | skinned models: `SkinVertex` models (3DS) or bone-batched `PspSkinVertex` models (PSP) |
 //! | `FONT` | `FontHeader`, `Glyph` table, then the glyph atlas as a 16-bit device texture |
 //! | `SIMG` | the simulation's world in built form (`maneuver_sim::worldfile::Built`) |
@@ -132,11 +132,16 @@ pub mod tex_format {
     pub const PICA_RGB565: u32 = 5;
     /// 16-bit `r << 12 | g << 8 | b << 4 | a`, tiled the same way.
     pub const PICA_RGBA4: u32 = 6;
+    /// 8-bit indices, swizzled. Each page starts with its palette: 256 colours, `r, g, b, 255` bytes.
+    pub const PSP_T8: u32 = 7;
+    /// Bytes of a `PSP_T8` page's palette.
+    pub const PALETTE_BYTES: usize = 1024;
 
     /// Bytes of one level of `w × h` texels.
     pub fn level_bytes(format: u32, w: u32, h: u32) -> usize {
         match format {
             BC1 | PSP_DXT1 => (w.div_ceil(4) * h.div_ceil(4) * 8) as usize,
+            PSP_T8 => (w * h) as usize,
             _ => (w * h * 2) as usize,
         }
     }
@@ -202,7 +207,7 @@ pub struct HandMesh {
     pub idx_count: u32,
     /// Indices from here to the end are large triangles, three each.
     pub big_first: u32,
-    /// First of their bytes in `CLIP`.
+    /// Where their groups and distance bytes start in `CLIP`.
     pub clip_first: u32,
     /// The largest of their clip distances, in metres; 0 without large triangles.
     pub clip_radius: f32,
@@ -210,6 +215,18 @@ pub struct HandMesh {
     pub min: [f32; 3],
     pub max: [f32; 3],
     pub pad: u32,
+}
+
+/// PSP: a mesh's large triangles are stored in groups of neighbours. A mesh's bytes in `CLIP` are a
+/// `u32` group count, the groups, then one distance byte per large triangle (group after group, each
+/// group's largest first), padded to 4 bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[repr(C)]
+pub struct ClipGroup {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+    /// Large triangles in the group.
+    pub tris: u32,
 }
 
 /// PSP static vertex, 12 bytes, in the order the GE reads components:
@@ -414,6 +431,7 @@ mod tests {
         assert_eq!(core::mem::size_of::<HandScene>(), 176);
         assert_eq!(core::mem::size_of::<HandMesh>(), 72);
         assert_eq!(core::mem::size_of::<PspVertex>(), 12);
+        assert_eq!(core::mem::size_of::<ClipGroup>(), 28);
         assert_eq!(core::mem::size_of::<PicaVertex>(), 16);
         assert_eq!(core::mem::size_of::<PspBatch>(), 16);
         assert_eq!(core::mem::size_of::<PspSkinVertex>(), 24);

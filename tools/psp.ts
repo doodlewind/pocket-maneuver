@@ -218,9 +218,19 @@ switch (cmd) {
       // A reset restarts PSPLINK from the Memory Stick and drops the cable for several seconds. A command sent
       // before the cable is back leaves PSPLINK half reset (the shell answers, storage does not) until someone
       // restarts it on the console. So: reset, then nothing until usbhostfs_pc logs a new connection.
+      // PSPLINK lists its own modules last: with nothing after USBHostFS, no program is loaded and no reset is needed.
+      const names = (await pspsh("modlist").catch(() => "")).split("\n").filter((l) => l.includes("Name:")).map((l) => l.split("Name:")[1]!.trim());
+      const idle = names.length > 0 && (names.at(-1) === "USBHostFS" || names.at(-1) === "PSPLINK");
       const before = connections();
-      await pspsh("reset").catch(() => "");
-      if (before === undefined) {
+      if (idle) {
+        console.log("psp: PSPLINK is idle; loading without a reset");
+      } else {
+        console.log(`psp: resetting PSPLINK (${names.at(-1) ?? "module list unreadable"})`);
+        await pspsh("reset").catch(() => "");
+      }
+      if (idle) {
+        // Nothing to wait for.
+      } else if (before === undefined) {
         console.log("psp: no usbhostfs_pc log (start the host with `bun tools/psp.ts serve`); waiting 15 s for PSPLINK");
         await Bun.sleep(15000);
       } else {
@@ -283,7 +293,11 @@ switch (cmd) {
     if (!existsSync(`${root}/maneuver/shot.raw`)) throw new Error("the emulator run wrote no frame");
     const raw = readFileSync(`${root}/maneuver/shot.raw`);
     const rgba = new Uint8Array(480 * 272 * 4);
-    for (let i = 0; i < 480 * 272; i++) rgba.set([raw[i * 4]!, raw[i * 4 + 1]!, raw[i * 4 + 2]!, 255], i * 4);
+    // The frame buffer is 16-bit: red in the low five bits, then six of green, five of blue.
+    for (let i = 0; i < 480 * 272; i++) {
+        const p = raw[i * 2]! | (raw[i * 2 + 1]! << 8);
+        rgba.set([((p & 31) * 255) / 31, (((p >> 5) & 63) * 255) / 63, ((p >> 11) * 255) / 31, 255], i * 4);
+    }
     const out = resolve(opt("--out", `${ROOT}/.pocket-build/psp/emu/frame.png`));
     writeFileSync(out, encodePng(rgba, 480, 272));
     console.log(out);

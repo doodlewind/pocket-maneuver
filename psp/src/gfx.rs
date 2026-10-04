@@ -25,7 +25,7 @@ use maneuver_handheld::game::Game;
 use maneuver_handheld::hud::{Font, Hud, HudVertex};
 use maneuver_handheld::mat::{self, Mat4};
 use maneuver_handheld::world::{Pick, World, NO_CELL};
-use maneuver_pack::{self as pack, tex_format, HandMesh, ModelHeader, PspBatch, PspSkinVertex, PspVertex, TexHeader};
+use maneuver_pack::{self as pack, tex_format, ClipGroup, HandMesh, ModelHeader, PspBatch, PspSkinVertex, PspVertex, TexHeader};
 use maneuver_sim::math::*;
 use maneuver_sim::pose::{BONES, CLOAK_N};
 use psp::sys::*;
@@ -36,8 +36,11 @@ use crate::store;
 const LIST_WORDS: usize = 196_608;
 static mut LIST: Align16<[u32; LIST_WORDS]> = Align16([0; LIST_WORDS]);
 
-const FB_BYTES: usize = 512 * 272 * 4;
-const VRAM_TEXTURES: usize = FB_BYTES * 2 + 512 * 272 * 2;
+/// One frame buffer: 512 × 272 texels of 16 bits. The colour and depth buffers are all this size.
+pub const FB_BYTES: usize = 512 * 272 * 2;
+const VRAM_TEXTURES: usize = FB_BYTES * 3;
+/// The palettes of an indexed atlas, where the GE reads them: 16-byte aligned main memory.
+static mut CLUT: Align16<[[u32; 256]; 4]> = Align16([[0; 256]; 4]);
 const VRAM_BYTES: usize = 2 * 1024 * 1024;
 
 pub const MAX_QUADS: usize = 320;
@@ -94,7 +97,7 @@ pub struct Stats {
     /// Large triangles tested and cut on the CPU.
     pub tested: u32,
     pub clipped: u32,
-    /// Microseconds of the frame's phases: choosing meshes, sky and far meshes, far giants, near models, near meshes, moving geometry, interface.
+    /// Microseconds of the frame's phases: choosing meshes, far meshes, far giants, near models, near meshes, sky and moving geometry, interface.
     pub phase: [u32; 7],
 }
 
@@ -139,15 +142,23 @@ impl Gfx {
         progress("atlas");
         let tex_bytes: Vec<u8> = file.records(pack::TEX0)?;
         let tex: TexHeader = pack::read(&tex_bytes, 0).ok_or("atlas header")?;
-        if tex.format != tex_format::PSP_DXT1 && tex.format != tex_format::PSP_5650 {
+        if !matches!(tex.format, tex_format::PSP_DXT1 | tex_format::PSP_5650 | tex_format::PSP_T8) || scene.h.pages > 4 {
             return Err("the atlas is not a PSP texture");
         }
         let vram = sceGeEdramGetAddr();
         let mut at = (VRAM_TEXTURES + 15) & !15;
         let mut src = core::mem::size_of::<TexHeader>();
         let mut pages = Vec::new();
-        for _ in 0..scene.h.pages {
+        for page in 0..scene.h.pages as usize {
             let mut levels = Vec::new();
+            if tex.format == tex_format::PSP_T8 {
+                src = (src + 15) & !15;
+                if src + tex_format::PALETTE_BYTES > tex_bytes.len() {
+                    return Err("the atlas is truncated");
+                }
+                ptr::copy_nonoverlapping(tex_bytes.as_ptr().add(src), ptr::addr_of_mut!(CLUT.0[page]) as *mut u8, tex_format::PALETTE_BYTES);
+                src += tex_format::PALETTE_BYTES;
+            }
             for l in 0..tex.mips {
                 src = (src + 15) & !15;
                 let n = tex_format::level_bytes(tex.format, tex.width >> l, tex.height >> l);
@@ -225,7 +236,8 @@ impl Gfx {
 
         sceGuInit();
         sceGuStart(GuContextType::Direct, ptr::addr_of_mut!(LIST.0) as *mut c_void);
-        sceGuDrawBuffer(DisplayPixelFormat::Psm8888, ptr::null_mut(), 512);
+        // 16-bit colour with ordered dither: half the memory traffic of 32-bit per pixel written.
+        sceGuDrawBuffer(DisplayPixelFormat::Psm5650, ptr::null_mut(), 512);
         sceGuDispBuffer(480, 272, FB_BYTES as *mut c_void, 512);
         sceGuDepthBuffer((FB_BYTES * 2) as *mut c_void, 512);
         sceGuOffset(2048 - 240, 2048 - 136);
@@ -237,6 +249,9 @@ impl Gfx {
         sceGuEnable(GuState::ClipPlanes);
         sceGuFrontFace(FrontFaceDirection::CounterClockwise);
         sceGuShadeModel(ShadingModel::Smooth);
+        let row = |x, y, z, w| ScePspIVector4 { x, y, z, w };
+        sceGuSetDither(&ScePspIMatrix4 { x: row(-4, 0, -3, 1), y: row(2, -2, 3, -1), z: row(-3, 1, -4, 0), w: row(3, -1, 2, -2) });
+        sceGuEnable(GuState::Dither);
         sceGuTexWrap(GuTexWrapMode::Repeat, GuTexWrapMode::Clamp);
         sceGuBlendFunc(BlendOp::Add, BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, 0, 0);
         sceGuLightMode(LightMode::SingleColor);
@@ -275,8 +290,16 @@ impl Gfx {
     }
 
     unsafe fn bind_page(&self, page: usize) {
-        let dxt = self.tex.format == tex_format::PSP_DXT1;
-        sceGuTexMode(if dxt { TexturePixelFormat::PsmDxt1 } else { TexturePixelFormat::Psm5650 }, self.tex.mips as i32 - 1, 0, if dxt { 0 } else { 1 });
+        let (format, swizzled) = match self.tex.format {
+            tex_format::PSP_DXT1 => (TexturePixelFormat::PsmDxt1, 0),
+            tex_format::PSP_T8 => {
+                sceGuClutMode(ClutPixelFormat::Psm8888, 0, 0xff, 0);
+                sceGuClutLoad(32, ptr::addr_of!(CLUT.0[page]) as *const c_void);
+                (TexturePixelFormat::PsmT8, 1)
+            }
+            _ => (TexturePixelFormat::Psm5650, 1),
+        };
+        sceGuTexMode(format, self.tex.mips as i32 - 1, 0, swizzled);
         const LEVELS: [MipmapLevel; 8] = [MipmapLevel::None, MipmapLevel::Level1, MipmapLevel::Level2, MipmapLevel::Level3, MipmapLevel::Level4, MipmapLevel::Level5, MipmapLevel::Level6, MipmapLevel::Level7];
         for (l, p) in self.pages[page].iter().enumerate() {
             let (w, h) = ((self.tex.width >> l) as i32, (self.tex.height >> l) as i32);
@@ -296,33 +319,64 @@ impl Gfx {
         };
         sceGuSetMatrix(MatrixMode::Model, &world);
         let nbig = ((rec.idx_count - rec.big_first) / 3) as usize;
-        let mut tested = 0;
-        let mut d = 0.0;
-        if nbig > 0 && !self.no_clip {
-            d = mat::box_distance(eye, &rec.min, &rec.max);
-            if d < rec.clip_radius {
-                // The bytes are sorted, largest first: the triangles that could reach the guard band are a prefix.
-                let codes = &self.clip[rec.clip_first as usize..rec.clip_first as usize + nbig];
-                tested = codes.iter().take_while(|&&c| c == 255 || c as f32 * 2.0 > d).count();
-            }
-        }
-        if tested == 0 {
+        let near_mesh = nbig > 0 && !self.no_clip && mat::box_distance(eye, &rec.min, &rec.max) < rec.clip_radius;
+        if !near_mesh {
             sceGuDrawArray(GuPrimitive::Triangles, vtype_world(), rec.idx_count as i32, idx.cast(), vtx.cast());
             self.stats.draws += 1;
             self.stats.tris += rec.idx_count / 3;
             return;
         }
-        let _ = d;
-        if rec.big_first > 0 {
-            sceGuDrawArray(GuPrimitive::Triangles, vtype_world(), rec.big_first as i32, idx.cast(), vtx.cast());
-            self.stats.draws += 1;
+        // The mesh's large triangles, group by group. Inside a group the largest come first, so the
+        // ones that could reach the guard band from this distance are a prefix; the rest of the group
+        // draws as it is, in one call with the neighbouring groups' rests where they touch.
+        let table = self.clip.as_ptr().add(rec.clip_first as usize);
+        let group_count = (table as *const u32).read_unaligned() as usize;
+        let groups = table.add(4) as *const ClipGroup;
+        let codes = table.add(4 + group_count * core::mem::size_of::<ClipGroup>());
+        let mut tested = 0usize;
+        // The static run being gathered: the small triangles, then untested large ones.
+        let (mut run_first, mut run_len) = (0usize, rec.big_first as usize);
+        let mut prefix = [0u16; 64];
+        let mut at = 0usize;
+        for g in 0..group_count {
+            let group = groups.add(g).read_unaligned();
+            let d = mat::box_distance(eye, &group.min, &group.max);
+            let mut n = 0usize;
+            while n < group.tris as usize {
+                let c = *codes.add(at + n);
+                if c != 255 && c as f32 * 2.0 <= d {
+                    break;
+                }
+                n += 1;
+            }
+            if g < prefix.len() {
+                prefix[g] = n as u16;
+            }
+            tested += n;
+            // Indices of this group's untested rest.
+            let rest_first = rec.big_first as usize + (at + n) * 3;
+            let rest_len = (group.tris as usize - n) * 3;
+            if n == 0 && run_first + run_len == rest_first {
+                run_len += rest_len;
+            } else {
+                if run_len > 0 {
+                    sceGuDrawArray(GuPrimitive::Triangles, vtype_world(), run_len as i32, idx.add(run_first).cast(), vtx.cast());
+                    self.stats.draws += 1;
+                    self.stats.tris += (run_len / 3) as u32;
+                }
+                run_first = rest_first;
+                run_len = rest_len;
+            }
+            at += group.tris as usize;
         }
-        let rest = nbig - tested;
-        if rest > 0 {
-            sceGuDrawArray(GuPrimitive::Triangles, vtype_world(), (rest * 3) as i32, idx.add(rec.big_first as usize + tested * 3).cast(), vtx.cast());
+        if run_len > 0 {
+            sceGuDrawArray(GuPrimitive::Triangles, vtype_world(), run_len as i32, idx.add(run_first).cast(), vtx.cast());
             self.stats.draws += 1;
+            self.stats.tris += (run_len / 3) as u32;
         }
-        self.stats.tris += rec.big_first / 3 + rest as u32;
+        if tested == 0 {
+            return;
+        }
 
         let verts = vtx as *const PspVertex;
         let k = [s[0] / 32768.0, s[1] / 32768.0, s[2] / 32768.0];
@@ -340,55 +394,60 @@ impl Gfx {
         let keep = sceGuGetMemory((tested * 6) as i32) as *mut u16;
         let mut kept = 0usize;
         let first = idx.add(rec.big_first as usize);
-        let codes = self.clip.as_ptr().add(rec.clip_first as usize);
-        for j in 0..tested {
-            let (a, b, c) = (*first.add(j * 3), *first.add(j * 3 + 1), *first.add(j * 3 + 2));
-            let code = *codes.add(j);
-            let pa = pos(a);
-            let reach = code as f32 * 2.0;
-            let to = pa - eye;
-            let d2 = to.len2();
-            let mut take = code != 255 && d2 > reach * reach;
-            // Before three transforms: `edge` bounds the triangle's size, so depth along the view decides most.
-            // Wholly behind the near plane, it is not drawn; wholly inside a cone of 82 degrees about
-            // the view direction (the guard band is wider than that at every field of view the camera
-            // uses), the GE takes it.
-            let mut slow = !take;
-            if slow && code != 255 {
-                let edge = reach * (1.0 / CLIP_REACH);
-                let z = to.dot(look);
-                if z + edge < near {
-                    continue;
+        let mut at = 0usize;
+        for g in 0..group_count {
+            let group_tris = groups.add(g).read_unaligned().tris as usize;
+            let n = if g < prefix.len() { prefix[g] as usize } else { 0 };
+            for j in at..at + n {
+                let (a, b, c) = (*first.add(j * 3), *first.add(j * 3 + 1), *first.add(j * 3 + 2));
+                let code = *codes.add(j);
+                let pa = pos(a);
+                let reach = code as f32 * 2.0;
+                let to = pa - eye;
+                let d2 = to.len2();
+                let mut take = code != 255 && d2 > reach * reach;
+                // Before three transforms: `edge` bounds the triangle's size, so depth along the view decides
+                // most. Wholly behind the near plane, it is not drawn; wholly inside a cone of 82 degrees
+                // about the view direction (the guard band is wider than that at every field of view the
+                // camera uses), the GE takes it.
+                let mut slow = !take;
+                if slow && code != 255 {
+                    let edge = reach * (1.0 / CLIP_REACH);
+                    let z = to.dot(look);
+                    if z + edge < near {
+                        continue;
+                    }
+                    if z - edge > near && z - edge > 0.14 * (sqrt(d2) + edge) {
+                        take = true;
+                        slow = false;
+                    }
                 }
-                if z - edge > near && z - edge > 0.14 * (sqrt(d2) + edge) {
-                    take = true;
-                    slow = false;
-                }
-            }
-            if slow {
-                let (pb, pc) = (pos(b), pos(c));
-                let cc = [guard.to_clip(pa), guard.to_clip(pb), guard.to_clip(pc)];
-                match guard.classify(&cc) {
-                    Verdict::Safe => take = true,
-                    Verdict::Culled => {}
-                    Verdict::Clip => {
-                        if *out_n + MAX_OUT <= CLIP_CAP {
-                            let tri = [full(a, pa), full(b, pb), full(c, pc)];
-                            let n = guard.clip(&tri, &cc, core::slice::from_raw_parts_mut(out.add(*out_n), MAX_OUT));
-                            *out_n += n;
-                            self.stats.clipped += 1;
-                        } else {
-                            take = true;
+                if slow {
+                    let (pb, pc) = (pos(b), pos(c));
+                    let cc = [guard.to_clip(pa), guard.to_clip(pb), guard.to_clip(pc)];
+                    match guard.classify(&cc) {
+                        Verdict::Safe => take = true,
+                        Verdict::Culled => {}
+                        Verdict::Clip => {
+                            if *out_n + MAX_OUT <= CLIP_CAP {
+                                let tri = [full(a, pa), full(b, pb), full(c, pc)];
+                                let n = guard.clip(&tri, &cc, core::slice::from_raw_parts_mut(out.add(*out_n), MAX_OUT));
+                                *out_n += n;
+                                self.stats.clipped += 1;
+                            } else {
+                                take = true;
+                            }
                         }
                     }
                 }
+                if take {
+                    *keep.add(kept) = a;
+                    *keep.add(kept + 1) = b;
+                    *keep.add(kept + 2) = c;
+                    kept += 3;
+                }
             }
-            if take {
-                *keep.add(kept) = a;
-                *keep.add(kept + 1) = b;
-                *keep.add(kept + 2) = c;
-                kept += 3;
-            }
+            at += group_tris;
         }
         self.stats.tested += tested as u32;
         if kept > 0 {
@@ -514,26 +573,15 @@ impl Gfx {
         sceGuClear(ClearBuffer::COLOR_BUFFER_BIT | ClearBuffer::DEPTH_BUFFER_BIT);
         sceGuSetMatrix(MatrixMode::View, &fmatrix(&view));
 
-        // ------------------------------------------------------------ sky
         let far_near = max(lod_near * 0.8, 8.0);
         let far_proj = fmatrix(&mat::perspective_gl(cam.fov, aspect, far_near, scene_h.clip_far));
-        sceGuSetMatrix(MatrixMode::Projection, &far_proj);
-        sceGuDepthRange(DEPTH_SPLIT - 1, 0);
-        sceGuDisable(GuState::DepthTest);
-        sceGuDisable(GuState::Texture2D);
-        sceGuDisable(GuState::Fog);
-        sceGuDisable(GuState::CullFace);
-        sceGuDisable(GuState::Fragment2X);
-        sceGuDepthMask(1);
-        let at_eye = fmatrix(&mat::translated(&mat::IDENTITY, cam.eye));
-        sceGuSetMatrix(MatrixMode::Model, &at_eye);
-        sceGuDrawArray(GuPrimitive::Triangles, vtype_color(), actors::SKY_INDICES as i32, self.sky_ib.as_ptr().cast(), self.sky_vb.as_ptr().cast());
-        sceGuEnable(GuState::Blend);
-        sceGuDrawArray(GuPrimitive::Triangles, vtype_color(), (2 * actors::FAN * 3) as i32, self.fan_ib.as_ptr().cast(), self.sun_vb.as_ptr().cast());
         sceGuDisable(GuState::Blend);
-        sceGuDepthMask(0);
-        self.stats.draws += 2;
-        self.stats.tris += (actors::SKY_INDICES / 3 + 2 * actors::FAN) as u32;
+        // Front to back: the cells around the eye first, then everything beyond, then the sky where
+        // nothing was drawn. The depth test then rejects what is hidden before it is textured; drawn
+        // far to near, a street's facades were filled five and six times over.
+        let by_distance = |a: &Pick, b: &Pick| a.dist.partial_cmp(&b.dist).unwrap_or(core::cmp::Ordering::Equal);
+        self.near.sort_unstable_by(by_distance);
+        self.far.sort_unstable_by(by_distance);
 
         // ------------------------------------------------------------ world state
         let world_state = |on: bool| {
@@ -559,33 +607,20 @@ impl Gfx {
         }
         sceGuFrontFace(if game.set.option & 2 == 0 { FrontFaceDirection::CounterClockwise } else { FrontFaceDirection::Clockwise });
 
-        // ------------------------------------------------------------ far pass
-        let frame = game.frame;
-        let far_guard = Guard::new(&vp, far_near, 480.0, 272.0, 2048.0);
-        world_state(true);
-        for _ in 0..game.set.repeat {
-            self.meshes(world, false, cam.eye, cam.look, &far_guard, scene_h.u_range, frame);
-        }
-        world_state(false);
-        lap(1);
-        // Giants out there: whole bodies beyond the near pass's reach.
-        let split = lod_near + 30.0;
-        self.skinned_state(&game.scene, true);
-        for i in 0..self.giants.len() {
-            let g = self.giants[i];
-            if g.dist <= split {
-                continue;
-            }
-            let skin = *game.titan_skin(g.index as usize, g.level == 0);
-            self.model((g.variant as usize, g.level as usize, false), &skin, g.sink, &game.scene.lights(g.vis));
-        }
-
-        lap(2);
         // ------------------------------------------------------------ near pass
-        let near_far = lod_near + 180.0;
-        sceGuSetMatrix(MatrixMode::Projection, &fmatrix(&mat::perspective_gl(cam.fov, aspect, scene_h.clip_near, near_far)));
+        let frame = game.frame;
+        // Giants whose whole body is beyond the near pass's reach draw in the far pass.
+        let split = lod_near + 30.0;
+        let near_proj = fmatrix(&mat::perspective_gl(cam.fov, aspect, scene_h.clip_near, lod_near + 180.0));
+        sceGuSetMatrix(MatrixMode::Projection, &near_proj);
         sceGuDepthRange(65535, DEPTH_SPLIT);
         let show = game.show_character();
+        self.skinned_state(&game.scene, true);
+        if show && game.set.actors {
+            let skin = game.sim.pose.skin;
+            let lights = game.scene.lights(game.actors.vis);
+            self.model((0, 0, true), &skin, 0.0, &lights);
+        }
         for i in 0..self.giants.len() {
             let g = self.giants[i];
             if g.dist > split {
@@ -593,11 +628,6 @@ impl Gfx {
             }
             let skin = *game.titan_skin(g.index as usize, g.level == 0);
             self.model((g.variant as usize, g.level as usize, false), &skin, g.sink, &game.scene.lights(g.vis));
-        }
-        if show && game.set.actors {
-            let skin = game.sim.pose.skin;
-            let lights = game.scene.lights(game.actors.vis);
-            self.model((0, 0, true), &skin, 0.0, &lights);
         }
         self.skinned_state(&game.scene, false);
         lap(3);
@@ -607,9 +637,52 @@ impl Gfx {
             self.meshes(world, true, cam.eye, cam.look, &near_guard, scene_h.u_range, frame);
         }
         world_state(false);
-        sceGuDisable(GuState::Texture2D);
-        sceGuSetMatrix(MatrixMode::Model, &fmatrix(&mat::IDENTITY));
         lap(4);
+
+        // ------------------------------------------------------------ far pass
+        sceGuSetMatrix(MatrixMode::Projection, &far_proj);
+        sceGuDepthRange(DEPTH_SPLIT - 1, 0);
+        let far_guard = Guard::new(&vp, far_near, 480.0, 272.0, 2048.0);
+        world_state(true);
+        for _ in 0..game.set.repeat {
+            self.meshes(world, false, cam.eye, cam.look, &far_guard, scene_h.u_range, frame);
+        }
+        world_state(false);
+        lap(1);
+        self.skinned_state(&game.scene, true);
+        for i in 0..self.giants.len() {
+            let g = self.giants[i];
+            if g.dist <= split {
+                continue;
+            }
+            let skin = *game.titan_skin(g.index as usize, g.level == 0);
+            self.model((g.variant as usize, g.level as usize, false), &skin, g.sink, &game.scene.lights(g.vis));
+        }
+        self.skinned_state(&game.scene, false);
+        lap(2);
+
+        // ------------------------------------------------------------ sky
+        // At the far end of the depth range, so it fills only what is still clear.
+        sceGuDepthRange(0, 0);
+        sceGuDisable(GuState::Texture2D);
+        sceGuDisable(GuState::Fog);
+        sceGuDisable(GuState::CullFace);
+        sceGuDepthMask(1);
+        let at_eye = fmatrix(&mat::translated(&mat::IDENTITY, cam.eye));
+        sceGuSetMatrix(MatrixMode::Model, &at_eye);
+        sceGuDrawArray(GuPrimitive::Triangles, vtype_color(), actors::SKY_INDICES as i32, self.sky_ib.as_ptr().cast(), self.sky_vb.as_ptr().cast());
+        sceGuEnable(GuState::Blend);
+        sceGuDrawArray(GuPrimitive::Triangles, vtype_color(), (2 * actors::FAN * 3) as i32, self.fan_ib.as_ptr().cast(), self.sun_vb.as_ptr().cast());
+        sceGuDisable(GuState::Blend);
+        sceGuDepthMask(0);
+        sceGuEnable(GuState::Fog);
+        self.stats.draws += 2;
+        self.stats.tris += (actors::SKY_INDICES / 3 + 2 * actors::FAN) as u32;
+
+        // The cloak, the wires and the discs draw with the near pass's frustum again.
+        sceGuSetMatrix(MatrixMode::Projection, &near_proj);
+        sceGuDepthRange(65535, DEPTH_SPLIT);
+        sceGuSetMatrix(MatrixMode::Model, &fmatrix(&mat::IDENTITY));
 
         // The cloak, the wires and the soft discs, written into the list's own memory.
         if game.set.actors {

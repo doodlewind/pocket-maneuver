@@ -53,6 +53,8 @@ pub struct Stats {
 pub struct Pick {
     pub mesh: u32,
     pub cell: u32,
+    /// Distance from the eye to the mesh's cell, for drawing front to back.
+    pub dist: f32,
 }
 
 pub const NO_CELL: u32 = u32::MAX;
@@ -157,7 +159,7 @@ impl World {
     pub fn pick(&self, planes: &[[f32; 4]; 6], eye: V3, lod_near: f32, lod_mid: f32, lod_far: f32, ready: &dyn Fn(u32) -> bool, far: &mut Vec<Pick>, near: &mut Vec<Pick>) -> Stats {
         let mut stats = Stats::default();
         for &i in self.list(self.backdrop) {
-            far.push(Pick { mesh: i, cell: NO_CELL });
+            far.push(Pick { mesh: i, cell: NO_CELL, dist: f32::MAX });
         }
         for s in &self.supers {
             if !mat::visible(planes, &s.min, &s.max) {
@@ -171,7 +173,7 @@ impl World {
                 for &i in self.list(s.far) {
                     let m = &self.recs[i as usize];
                     if mat::visible(planes, &m.min, &m.max) {
-                        far.push(Pick { mesh: i, cell: NO_CELL });
+                        far.push(Pick { mesh: i, cell: NO_CELL, dist: d });
                         stats.far += 1;
                     }
                 }
@@ -183,10 +185,11 @@ impl World {
                     continue;
                 }
                 // The list follows the distance, whichever mesh is drawn: a cell around the eye is in `near`.
-                let close = mat::box_distance(eye, &c.min, &c.max) < lod_near;
+                let dist = mat::box_distance(eye, &c.min, &c.max);
+                let close = dist < lod_near;
                 if close && c.near.count > 0 && ready(ci) {
                     for &i in self.list(c.near) {
-                        near.push(Pick { mesh: i, cell: ci });
+                        near.push(Pick { mesh: i, cell: ci, dist });
                         stats.near += 1;
                     }
                 } else {
@@ -194,7 +197,7 @@ impl World {
                         stats.waiting += 1;
                     }
                     for &i in self.list(c.mid) {
-                        if close { &mut *near } else { &mut *far }.push(Pick { mesh: i, cell: NO_CELL });
+                        if close { &mut *near } else { &mut *far }.push(Pick { mesh: i, cell: NO_CELL, dist });
                         stats.mid += 1;
                     }
                 }

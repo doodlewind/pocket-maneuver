@@ -72,6 +72,7 @@ typedef struct {
 
 typedef struct {
   uint32_t mesh, cell;
+  float dist;
 } MhPick;
 
 typedef struct {
