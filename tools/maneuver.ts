@@ -53,6 +53,8 @@ switch (cmd) {
   case "capture":
   case "ctl":
   case "hold":
+  case "vpk":
+  case "push-vpk":
   case "bench": {
     const vita = await import("./vita.ts");
     if (cmd === "build") await vita.build(rest);
@@ -70,6 +72,8 @@ switch (cmd) {
     else if (cmd === "capture") await vita.dev(rest, "capture", ...(rest.includes("--out") ? ["--out", resolve(rest[rest.indexOf("--out") + 1])] : []));
     else if (cmd === "ctl") vita.ctl(rest, rest.find((a) => a.startsWith("{")) ?? "{}");
     else if (cmd === "hold") await vita.hold(rest);
+    else if (cmd === "vpk") await vita.vpk(rest);
+    else if (cmd === "push-vpk") await vita.pushVpk(rest);
     else {
       const { bench } = await import("./bench.ts");
       await bench(rest);

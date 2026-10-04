@@ -53,6 +53,8 @@ pub struct Gpu {
     /// Hashes of every program in use, for packaging.
     pub manifest: Vec<String>,
     live: bool,
+    /// The display surface's multisample mode; fragment programs are patched for it.
+    msaa: u32,
 }
 
 fn fnv64(parts: &[&[u8]]) -> u64 {
@@ -74,9 +76,9 @@ pub struct Layout<'a> {
 }
 
 impl Gpu {
-    pub unsafe fn new(live: bool) -> Result<Gpu, String> {
+    pub unsafe fn new(live: bool, msaa: u32) -> Result<Gpu, String> {
         let _ = std::fs::create_dir_all(paths::GXP_CACHE);
-        Ok(Gpu { patcher: Patcher::new(512 * 1024, 256 * 1024, 512 * 1024)?, compiler: None, compiled: 0, cached: 0, manifest: Vec::new(), live })
+        Ok(Gpu { patcher: Patcher::new(512 * 1024, 256 * 1024, 512 * 1024)?, compiler: None, compiled: 0, cached: 0, manifest: Vec::new(), live, msaa })
     }
 
     /// The GXP of a source: cached on the memory card, shipped in the package, or compiled now.
@@ -125,8 +127,8 @@ impl Gpu {
             attrs.push(Attr { reg, offset: *offset, format: *format, count: *count, stream: 0 });
         }
         let vp = program::vertex_program(self.patcher.raw, &vs, &attrs, &[layout.stride])?;
-        let opaque = program::fragment_program(self.patcher.raw, &fs, Output::Uchar4, 0, Blend::Opaque, vs.program())?;
-        let alpha = program::fragment_program(self.patcher.raw, &fs, Output::Uchar4, 0, Blend::Alpha, vs.program())?;
+        let opaque = program::fragment_program(self.patcher.raw, &fs, Output::Uchar4, self.msaa, Blend::Opaque, vs.program())?;
+        let alpha = program::fragment_program(self.patcher.raw, &fs, Output::Uchar4, self.msaa, Blend::Alpha, vs.program())?;
         let u_mvp = vs.param("uMvp");
         let u_fog = vs.param("uFog");
         Ok(Program { vs, fs, vp, opaque, alpha, u_mvp, u_fog })

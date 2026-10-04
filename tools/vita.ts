@@ -9,6 +9,8 @@
 //   bun tools/maneuver.ts status | capture [--out f.png]
 //   bun tools/maneuver.ts ctl '{"auto":true}'        # host0:maneuver/control.json
 //   bun tools/maneuver.ts bench [--seconds 60]       # autopilot frame timings → device.json
+//   bun tools/maneuver.ts vpk                        # standalone PKMV00001 package: pack and programs inside
+//   bun tools/maneuver.ts push-vpk [file.vpk]        # → ux0:data/pocket-maneuver/ via the development build
 //   bun tools/maneuver.ts hold [--take|--release]    # keep the console for this repository across commands
 //
 // `--share DIR` uses an already-running USB host's root directory instead of
@@ -20,7 +22,7 @@
 
 import { $ } from "bun";
 import { createHash, randomBytes } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { packageVitaVpk } from "../vendor/pocketjs/tools/vita-package.ts";
 import { prepareVitaUsb } from "../vendor/pocketjs/tools/vita-usb.ts";
@@ -54,7 +56,7 @@ export function context(argv: string[]) {
   return { title, share, appShare: resolve(share, "maneuver"), output: `pocket-maneuver-${title}`, release: !argv.includes("--debug"), standalone };
 }
 
-export async function build(argv: string[]): Promise<string> {
+export async function build(argv: string[], assets?: string): Promise<string> {
   const c = context(argv);
   if (!existsSync(`${vitasdk}/bin/vita-pack-vpk`)) throw new Error(`VitaSDK not found at ${vitasdk}`);
   const usb = c.standalone ? undefined : await prepareVitaUsb();
@@ -85,7 +87,7 @@ export async function build(argv: string[]): Promise<string> {
   // Unsafe-homebrew SELF: loading the USB driver and writing the inactive native slot need the standard homebrew permissions.
   await $`${vitasdk}/bin/vita-make-fself ${target}/${BIN}.velf ${eboot}`;
   await $`${vitasdk}/bin/vita-mksfoex -d ATTRIBUTE2=12 -s TITLE_ID=${c.title} ${"Pocket Maneuver"} ${sfo}`;
-  await packageVitaVpk({ tool: `${vitasdk}/bin/vita-pack-vpk`, sfo, eboot, output: vpk, usbDriver: usb?.driver });
+  await packageVitaVpk({ tool: `${vitasdk}/bin/vita-pack-vpk`, sfo, eboot, output: vpk, usbDriver: usb?.driver, applicationAssets: assets ?? `${APP_DIR}/assets` });
 
   mkdirSync(OUT_DIR, { recursive: true });
   cpSync(vpk, `${OUT_DIR}/${c.output}.vpk`);
@@ -166,6 +168,49 @@ export function sync(argv: string[]): void {
   }
 }
 
+/**
+ * The standalone package: the pack and the programs the device compiled go
+ * inside the VPK, and the build carries no USB debug driver.
+ */
+export async function vpk(argv: string[]): Promise<void> {
+  const c = context(argv);
+  const manifest = `${c.appShare}/gxp/manifest.txt`;
+  if (!existsSync(manifest)) throw new Error(`${manifest} missing: run the development build on the device first`);
+  if (!existsSync(PACK)) throw new Error(`no pack at ${PACK}: run \`bun tools/maneuver.ts cook\` first`);
+  const stage = resolve(ROOT, ".pocket-build/vpk");
+  rmSync(stage, { recursive: true, force: true });
+  mkdirSync(`${stage}/gxp`, { recursive: true });
+  cpSync(`${APP_DIR}/assets`, stage, { recursive: true });
+  const hashes = readFileSync(manifest, "utf8").split("\n").filter(Boolean);
+  for (const h of hashes) {
+    const gxp = `${c.appShare}/gxp/${h}.gxp`;
+    if (!existsSync(gxp)) throw new Error(`${gxp} missing: the device has not compiled this build's programs`);
+    cpSync(gxp, `${stage}/gxp/${h}.gxp`);
+  }
+  cpSync(PACK, `${stage}/world.pack`);
+  console.log(`maneuver: staged ${hashes.length} programs and the pack in ${stage}`);
+  await build([...argv.filter((a) => a !== "--standalone"), "--standalone"], stage);
+}
+
+/** Sends a packaged VPK to `ux0:data/pocket-maneuver/` through the running development build, for VitaShell to install. */
+export async function pushVpk(argv: string[]): Promise<void> {
+  const c = context(argv);
+  const file = resolve(argv.find((a) => a.endsWith(".vpk")) ?? `${OUT_DIR}/pocket-maneuver-PKMV00001.vpk`);
+  const name = file.split("/").pop()!;
+  mkdirSync(`${c.appShare}/outbox`, { recursive: true });
+  rmSync(`${c.appShare}/outbox/${name}.done`, { force: true });
+  cpSync(file, `${c.appShare}/outbox/${name}`);
+  ctl(argv, JSON.stringify({ fetch: name, nonce: Date.now() }));
+  for (let i = 0; i < 240; i++) {
+    await Bun.sleep(500);
+    if (existsSync(`${c.appShare}/outbox/${name}.done`)) {
+      console.log(`maneuver: ${readFileSync(`${c.appShare}/outbox/${name}.done`, "utf8")}`);
+      return;
+    }
+  }
+  throw new Error("the device did not confirm the copy");
+}
+
 export function ctl(argv: string[], json: string): void {
   const c = context(argv);
   mkdirSync(c.appShare, { recursive: true });
@@ -176,5 +221,13 @@ export function ctl(argv: string[], json: string): void {
 /** The running process's status receipt, straight from the share. */
 export function status(argv: string[]): any {
   const c = context(argv);
-  return JSON.parse(readFileSync(`${c.share}/pocket-vita/${c.title}/status.json`, "utf8"));
+  // The device replaces the file every few frames; a read can land between the old one and the new one.
+  for (let i = 0; ; i++) {
+    try {
+      return JSON.parse(readFileSync(`${c.share}/pocket-vita/${c.title}/status.json`, "utf8"));
+    } catch (e) {
+      if (i >= 20) throw e;
+      Bun.sleepSync(25);
+    }
+  }
 }

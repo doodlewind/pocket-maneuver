@@ -9,7 +9,8 @@ use maneuver_sim::{testworld, worldfile};
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let trace = args.iter().any(|a| a == "--trace");
-    let pos: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+    let skip = args.iter().position(|a| a == "--wav").map(|i| i + 1);
+    let pos: Vec<&String> = args.iter().enumerate().filter(|(i, a)| !a.starts_with("--") && Some(*i) != skip).map(|(_, a)| a).collect();
     let bytes = match pos.first() {
         Some(p) if p.as_str() != "-" => std::fs::read(p.as_str()).expect("read world file"),
         _ => testworld::build(),
@@ -25,10 +26,21 @@ fn main() {
     let mut count = [0u32; 18];
     let mut dist = 0.0f32;
     let mut last = sim.p.pos;
+    // `--wav <file>` renders the run's sound at 22.05 kHz.
+    let wav = args.iter().position(|a| a == "--wav").and_then(|i| args.get(i + 1)).cloned();
+    let mut synth = maneuver_sim::audio::Synth::new();
+    let mut pcm: Vec<i16> = Vec::new();
     let t1 = std::time::Instant::now();
     for t in 0..ticks {
         let input = sim.auto_input();
         sim.tick(input);
+        if wav.is_some() {
+            synth.control(&sim, sim.events);
+            let at = pcm.len();
+            // 367.5 frames per tick at 22.05 kHz: alternate 367 and 368.
+            pcm.resize(at + (367 + (t as usize & 1)) * 2, 0);
+            synth.render(&mut pcm[at..], 22050.0);
+        }
         let s = sim.speed();
         sum_speed += s;
         max_speed = max_speed.max(s);
@@ -60,4 +72,23 @@ fn main() {
     println!("events: {}", line.join(", "));
     println!("run: kills {}/{}  gas {:.0}", sim.run.kills, sim.dummies.len(), sim.p.gas);
     let _ = ev::JUMP;
+    if let Some(path) = wav {
+        let peak = pcm.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+        let rms = (pcm.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / pcm.len().max(1) as f64).sqrt();
+        let mut out = Vec::with_capacity(44 + pcm.len() * 2);
+        let bytes = (pcm.len() * 2) as u32;
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + bytes).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        for v in [16u32, 0x0002_0001, 22050, 22050 * 4, 0x0010_0004] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&bytes.to_le_bytes());
+        for s in &pcm {
+            out.extend_from_slice(&s.to_le_bytes());
+        }
+        std::fs::write(&path, out).expect("write wav");
+        println!("sound: {path}, peak {peak} of 32767, rms {rms:.0}");
+    }
 }

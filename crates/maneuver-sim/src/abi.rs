@@ -111,6 +111,8 @@ static mut SIM: Option<Sim> = None;
 static mut SNAP: [f32; snap::LEN] = [0.0; snap::LEN];
 static mut DUMMIES: Vec<f32> = Vec::new();
 static mut RAY: [f32; 5] = [0.0; 5];
+static mut SYNTH: Option<crate::audio::Synth> = None;
+static mut PCM: [i16; 8192] = [0; 8192];
 
 #[allow(static_mut_refs)]
 fn sim() -> Option<&'static mut Sim> {
@@ -165,6 +167,23 @@ pub extern "C" fn mv_reset() {
 pub extern "C" fn mv_tick(buttons: u32, lx: f32, ly: f32, rx: f32, ry: f32) {
     if let Some(s) = sim() {
         s.tick(Input { buttons, lx, ly, rx, ry });
+        listen(s);
+    }
+}
+
+#[allow(static_mut_refs)]
+fn listen(s: &Sim) {
+    unsafe { SYNTH.get_or_insert_with(crate::audio::Synth::new).control(s, s.events) }
+}
+
+/// Renders `frames` stereo frames (at most 4096) at `rate` Hz; returns interleaved 16-bit samples.
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub extern "C" fn mv_audio(frames: u32, rate: f32) -> *const i16 {
+    unsafe {
+        let n = (frames as usize).min(4096) * 2;
+        SYNTH.get_or_insert_with(crate::audio::Synth::new).render(&mut PCM[..n], rate);
+        PCM.as_ptr()
     }
 }
 
@@ -175,6 +194,7 @@ pub extern "C" fn mv_tick_auto() -> u32 {
         Some(s) => {
             let i = s.auto_input();
             s.tick(i);
+            listen(s);
             i.buttons
         }
         None => 0,

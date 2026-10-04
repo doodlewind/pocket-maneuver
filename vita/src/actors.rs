@@ -25,6 +25,10 @@ pub struct ColorVertex {
 
 pub const QUADS: usize = 2048;
 const PUFFS: usize = 72;
+/// A soft disc: a centre and `FAN` rim vertices, opaque in the middle and clear at the rim.
+const FAN: usize = 12;
+/// Discs per frame: the gas puffs and the character's ground shadow.
+const DISCS: usize = PUFFS + 1;
 const SKY_SEGS: usize = 24;
 const SKY_RINGS: usize = 13;
 
@@ -164,8 +168,8 @@ pub struct Frame {
     nape_idx: u32,
     wire_vb: *const u8,
     wire_quads: u32,
-    puff_vb: *const u8,
-    puff_quads: u32,
+    disc_vb: *const u8,
+    discs: u32,
 }
 
 pub struct Actors {
@@ -173,6 +177,8 @@ pub struct Actors {
     sky_vb: *const u8,
     sky_ib: *const u16,
     sky_idx: u32,
+    /// Two soft discs toward the sun: the disc and its halo.
+    sun_vb: *const u8,
     body_vb: *const u8,
     body_ib: *const u16,
     body_idx: u32,
@@ -181,6 +187,8 @@ pub struct Actors {
     char_verts: usize,
     /// Shared indices for quads: 0 1 2, 0 2 3, per four vertices.
     pub quad_ib: *const u16,
+    /// Shared indices for discs of `FAN + 1` vertices.
+    fan_ib: *const u16,
     parts: Vec<Model>,
     nape: Model,
     puffs: [Puff; PUFFS],
@@ -210,7 +218,7 @@ impl Actors {
         if body_verts > 65535 || char_verts > 65535 {
             return Err("too many model vertices for 16-bit indices".into());
         }
-        let size = (sky_verts + body_verts) * 16 + (sky_idx + body_idx + char_idx + QUADS * 6) * 2 + 256;
+        let size = (sky_verts + body_verts + 2 * (FAN + 1)) * 16 + (sky_idx + body_idx + char_idx + QUADS * 6 + DISCS * FAN * 3) * 2 + 256;
         let mut block = Block::with_access(Kind::Main, size, false)?;
         let mut alloc = |bytes: usize| block.alloc(bytes, 16).ok_or("actor geometry block".to_string());
 
@@ -235,6 +243,20 @@ impl Actors {
                     *sky_ib.add(k) = i;
                     k += 1;
                 }
+            }
+        }
+
+        let sun_vb = alloc(2 * (FAN + 1) * 16)?.cast::<ColorVertex>();
+        let ax = scene.sun_dir.cross(V3::UP).norm_or(v3(1.0, 0.0, 0.0));
+        let ay = scene.sun_dir.cross(ax);
+        for (d, (radius, alpha)) in [(260.0f32, 70u8), (70.0, 255)].into_iter().enumerate() {
+            let c = scene.sun_dir * 1900.0;
+            let warm = [scene.encode(1.0), scene.encode(0.9), scene.encode(0.72)];
+            *sun_vb.add(d * (FAN + 1)) = ColorVertex { pos: [c.x, c.y, c.z], color: [warm[0], warm[1], warm[2], alpha] };
+            for t in 0..FAN {
+                let a = t as f32 / FAN as f32 * TAU;
+                let q = c + ax * (cos(a) * radius) + ay * (sin(a) * radius);
+                *sun_vb.add(d * (FAN + 1) + 1 + t) = ColorVertex { pos: [q.x, q.y, q.z], color: [warm[0], warm[1], warm[2], 0] };
             }
         }
 
@@ -270,11 +292,22 @@ impl Actors {
             }
         }
 
+        let fan_ib = alloc(DISCS * FAN * 6)?.cast::<u16>();
+        for d in 0..DISCS {
+            let b = (d * (FAN + 1)) as u16;
+            for t in 0..FAN {
+                *fan_ib.add((d * FAN + t) * 3) = b;
+                *fan_ib.add((d * FAN + t) * 3 + 1) = b + 1 + t as u16;
+                *fan_ib.add((d * FAN + t) * 3 + 2) = b + 1 + ((t + 1) % FAN) as u16;
+            }
+        }
+
         Ok(Actors {
             _block: block,
             sky_vb: sky_vb.cast(),
             sky_ib,
             sky_idx: sky_idx as u32,
+            sun_vb: sun_vb.cast(),
             body_vb: body_vb.cast(),
             body_ib,
             body_idx: body_idx as u32,
@@ -282,6 +315,7 @@ impl Actors {
             char_idx: char_idx as u32,
             char_verts,
             quad_ib,
+            fan_ib,
             parts,
             nape,
             puffs: [Puff { pos: V3::ZERO, vel: V3::ZERO, age: 9.0 }; PUFFS],
@@ -292,7 +326,7 @@ impl Actors {
 
     /// Bytes `update` takes from the ring.
     pub fn frame_bytes(&self, dummies: usize) -> usize {
-        (self.char_verts + dummies * self.nape.verts.len() + 8 + PUFFS * 4) * 16 + dummies * self.nape.idx.len() * 2 + 64
+        (self.char_verts + dummies * self.nape.verts.len() + 8 + DISCS * (FAN + 1)) * 16 + dummies * self.nape.idx.len() * 2 + 64
     }
 
     /// Writes this frame's moving geometry into the ring.
@@ -372,11 +406,30 @@ impl Actors {
                 self.puffs[j] = Puff { pos: sim.hip(i) - v3(0.0, 0.25, 0.0), vel: sim.p.vel * 0.35 + jitter, age: 0.0 };
             }
         }
-        let puff_vb = ring.alloc(PUFFS * 4 * 16, 16)?.cast::<ColorVertex>();
+        let disc_vb = ring.alloc(DISCS * (FAN + 1) * 16, 16)?.cast::<ColorVertex>();
+        let mut discs = 0usize;
+        let mut disc = |c: V3, ax: V3, ay: V3, radius: f32, color: [u8; 4]| {
+            let v = disc_vb.add(discs * (FAN + 1));
+            *v = ColorVertex { pos: [c.x, c.y, c.z], color };
+            for t in 0..FAN {
+                let a = t as f32 / FAN as f32 * TAU;
+                let q = c + ax * (cos(a) * radius) + ay * (sin(a) * radius);
+                *v.add(1 + t) = ColorVertex { pos: [q.x, q.y, q.z], color: [color[0], color[1], color[2], 0] };
+            }
+            discs += 1;
+        };
+        // The character's shadow on whatever is below, fainter with height.
+        if let Some(h) = sim.world.raycast(sim.p.pos, v3(0.0, -1.0, 0.0), 30.0, mask::ALL) {
+            if h.front {
+                let at = sim.p.pos - v3(0.0, h.t - 0.04, 0.0);
+                let ax = h.n.cross(v3(0.0, 0.0, 1.0)).norm_or(v3(1.0, 0.0, 0.0));
+                let k = 1.0 - h.t / 30.0;
+                disc(at, ax, h.n.cross(ax), 0.55 + h.t * 0.06, [0, 0, 0, (150.0 * k * k) as u8]);
+            }
+        }
         let fwd = sim.cam.look;
         let right = fwd.cross(V3::UP).norm_or(v3(1.0, 0.0, 0.0));
         let up = right.cross(fwd);
-        let mut puffs = 0u32;
         for p in &mut self.puffs {
             if p.age > 0.7 {
                 continue;
@@ -384,28 +437,26 @@ impl Actors {
             p.age += dt;
             p.pos += p.vel * dt;
             let k = p.age / 0.7;
-            let size = 0.18 + k * 0.9;
-            let color = [236, 240, 244, ((1.0 - k) * 130.0) as u8];
-            for (j, (sx, sy)) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].into_iter().enumerate() {
-                let q = p.pos + right * (sx * size) + up * (sy * size);
-                *puff_vb.add(puffs as usize * 4 + j) = ColorVertex { pos: [q.x, q.y, q.z], color };
-            }
-            puffs += 1;
+            disc(p.pos, right, up, 0.22 + k * 1.1, [240, 243, 246, ((1.0 - k) * 150.0) as u8]);
         }
 
-        Some(Frame { char_vb: char_vb.cast(), nape_vb: nape_vb.cast(), nape_ib, nape_idx: (drawn * ni) as u32, wire_vb: wire_vb.cast(), wire_quads: wires, puff_vb: puff_vb.cast(), puff_quads: puffs })
+        Some(Frame { char_vb: char_vb.cast(), nape_vb: nape_vb.cast(), nape_ib, nape_idx: (drawn * ni) as u32, wire_vb: wire_vb.cast(), wire_quads: wires, disc_vb: disc_vb.cast(), discs: discs as u32 })
     }
 
     /// The sky, first in the frame: centred on the eye, no depth, no haze.
     pub unsafe fn draw_sky(&self, ctx: *mut g::SceGxmContext, prog: &Program, vp: &Mat4, eye: V3) {
         prog.bind(ctx, false);
         gpu::state_overlay(ctx, false);
-        prog.uniforms(ctx, &mat::translated(vp, eye), 0.0);
+        let m = mat::translated(vp, eye);
+        prog.uniforms(ctx, &m, 0.0);
         gpu::draw(ctx, self.sky_vb, self.sky_ib, self.sky_idx);
+        prog.bind(ctx, true);
+        prog.uniforms(ctx, &m, 0.0);
+        gpu::draw(ctx, self.sun_vb, self.fan_ib, 2 * (FAN * 3) as u32);
     }
 
     /// Targets, the character and the wires. Returns draws and triangles.
-    pub unsafe fn draw_opaque(&self, ctx: *mut g::SceGxmContext, prog: &Program, vp: &Mat4, f: &Frame, fog: f32, cull_cw: bool) -> (u32, u32) {
+    pub unsafe fn draw_opaque(&self, ctx: *mut g::SceGxmContext, prog: &Program, vp: &Mat4, f: &Frame, fog: f32, cull_cw: bool, character: bool) -> (u32, u32) {
         prog.bind(ctx, false);
         gpu::state_opaque(ctx, cull_cw);
         let mut tris = self.char_idx / 3;
@@ -422,8 +473,10 @@ impl Actors {
             tris += f.nape_idx / 3;
             draws += 1;
         }
-        prog.uniforms(ctx, vp, fog);
-        gpu::draw(ctx, f.char_vb, self.char_ib, self.char_idx);
+        if character {
+            prog.uniforms(ctx, vp, fog);
+            gpu::draw(ctx, f.char_vb, self.char_ib, self.char_idx);
+        }
         if f.wire_quads > 0 {
             g::sceGxmSetCullMode(ctx, g::SceGxmCullMode_SCE_GXM_CULL_NONE);
             prog.uniforms(ctx, vp, fog);
@@ -433,14 +486,14 @@ impl Actors {
         (draws, tris)
     }
 
-    /// Gas puffs, blended over the scene.
+    /// The ground shadow and the gas, blended over the scene.
     pub unsafe fn draw_blend(&self, ctx: *mut g::SceGxmContext, prog: &Program, vp: &Mat4, f: &Frame, fog: f32) {
-        if f.puff_quads == 0 {
+        if f.discs == 0 {
             return;
         }
         prog.bind(ctx, true);
         gpu::state_overlay(ctx, true);
         prog.uniforms(ctx, vp, fog);
-        gpu::draw(ctx, f.puff_vb, self.quad_ib, f.puff_quads * 6);
+        gpu::draw(ctx, f.disc_vb, self.fan_ib, f.discs * (FAN * 3) as u32);
     }
 }

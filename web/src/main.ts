@@ -128,6 +128,22 @@ function tick() {
   }
 }
 
+/** Sound starts on the first key, click or pad press: browsers require a gesture. */
+function startAudio() {
+  const ctx = new AudioContext();
+  const node = ctx.createScriptProcessor(1024, 0, 2);
+  node.onaudioprocess = (e) => {
+    const pcm = sim.audio(1024, ctx.sampleRate);
+    const l = e.outputBuffer.getChannelData(0);
+    const r = e.outputBuffer.getChannelData(1);
+    for (let i = 0; i < 1024; i++) {
+      l[i] = pcm[i * 2] / 32768;
+      r[i] = pcm[i * 2 + 1] / 32768;
+    }
+  };
+  node.connect(ctx.destination);
+}
+
 if (shot) {
   document.body.classList.add("shot");
   const n = Number(q.get("ticks") ?? 1);
@@ -137,6 +153,7 @@ if (shot) {
   const s = sim.snapshot();
   document.title = `shot-ready ${JSON.stringify({ ...stats, calls: renderer.info.render.calls, buildMs: Math.round(buildMs), pos: [...s.subarray(SNAP.POS, SNAP.POS + 3)].map((v) => Math.round(v)), speed: Math.round(s[SNAP.SPEED]) })}`;
 } else {
+  for (const type of ["keydown", "pointerdown"]) window.addEventListener(type, startAudio, { once: true });
   let last = performance.now();
   let acc = 0;
   const frame = (now: number) => {

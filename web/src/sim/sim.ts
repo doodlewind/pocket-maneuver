@@ -17,6 +17,7 @@ interface Exports {
   mv_dummies(): number;
   mv_raycast(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, tmax: number): number;
   mv_ray_hit(): number;
+  mv_audio(frames: number, rate: number): number;
 }
 
 export class Sim {
@@ -54,6 +55,10 @@ export class Sim {
   /** Per target: alive, ticks since its cut. */
   dummies(): Float32Array {
     return new Float32Array(this.x.memory.buffer, this.x.mv_dummies(), this.dummyCount * 2);
+  }
+  /** Renders `frames` stereo frames of sound; the view is valid until the next call. */
+  audio(frames: number, rate: number): Int16Array {
+    return new Int16Array(this.x.memory.buffer, this.x.mv_audio(frames, rate), frames * 2);
   }
   raycast(o: readonly number[], d: readonly number[], tmax: number): number {
     return this.x.mv_raycast(o[0], o[1], o[2], d[0], d[1], d[2], tmax);

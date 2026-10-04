@@ -20,6 +20,6 @@ export const SCENE = {
   zenith: [0.24, 0.44, 0.8] as const,
   glow: [1.0, 0.82, 0.58] as const,
   /** A near cell draws its detailed mesh inside `near` metres and its simple one beyond; super-cells past `mid` draw the far mesh. */
-  lod: { near: 110, mid: 380 },
+  lod: { near: 160, mid: 560 },
   clip: { near: 0.35, far: 4200 },
 } as const;
