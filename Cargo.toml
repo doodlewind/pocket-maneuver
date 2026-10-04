@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/maneuver-sim", "crates/maneuver-pack", "crates/maneuver-cook", "crates/maneuver-handheld"]
+members = ["crates/maneuver-sim", "crates/maneuver-pack", "crates/maneuver-cook", "crates/maneuver-handheld", "crates/maneuver-interface"]
 # The device apps build with their own toolchains and lockfiles.
 exclude = ["vita", "psp", "n3ds", "vendor"]
 

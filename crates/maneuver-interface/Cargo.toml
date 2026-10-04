@@ -1,0 +1,20 @@
+[package]
+name = "maneuver-interface"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The renderer's side of Pocket Maneuver's interface: the protocol of ui/, the game's flow around the simulation, and the channel a PocketJS guest opens in the process"
+
+[features]
+default = ["std"]
+# Without `std` the crate needs only `core` and `alloc` (the device builds).
+std = ["maneuver-sim/std"]
+# The guest's service ops answered through the QuickJS API (the Vita and the PSP, whose hosts are Rust).
+guest = ["dep:libquickjs-sys"]
+# The same ops as the C symbols PocketJS's C hosts call (the 3DS and the iPod touch).
+wire = []
+
+[dependencies]
+maneuver-sim = { path = "../maneuver-sim", default-features = false }
+libm = "0.2"
+libquickjs-sys = { git = "https://github.com/pocket-nexus/quickjs-rs.git", rev = "ba5bdd0dc013518768e76cd9e05cd30ed53dd35b", optional = true }
