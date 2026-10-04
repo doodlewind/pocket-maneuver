@@ -15,6 +15,7 @@ mod hostfs;
 mod hud;
 mod mat;
 mod paths;
+mod post;
 mod world;
 
 use std::io::Read;
@@ -30,8 +31,9 @@ use maneuver_sim::math::*;
 use maneuver_sim::sim::{btn, ev, tune, Input};
 use maneuver_sim::Sim;
 use pocket_vita_gxm::mem::{Arena, Kind, Ring};
-use pocket_vita_gxm::program::{F32, S16N, U16N, U8N};
-use pocket_vita_gxm::target::Fence;
+use pocket_vita_gxm::program::{F32, S16N, S8N, U16N, U8, U8N};
+use pocket_vita_gxm::target::{Fence, Msaa};
+use post::{Look, Post};
 use pocketjs_vita::{dev, dev_protocol::Op, devmenu::Action, graphics, input};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -55,7 +57,7 @@ extern "C" {
     fn sceDisplayGetVcount() -> i32;
 }
 
-/// Samples per pixel of the display surface.
+/// Samples per pixel of the scene target.
 const DEFAULT_MSAA: u64 = 4;
 
 /// ARM, bus, GPU and GPU crossbar clocks (MHz) the frame budget assumes.
@@ -72,6 +74,7 @@ const WORLD_V: &str = include_str!("../shaders/world_v.cg");
 const WORLD_F: &str = include_str!("../shaders/world_f.cg");
 const COLOR_V: &str = include_str!("../shaders/color_v.cg");
 const COLOR_F: &str = include_str!("../shaders/color_f.cg");
+const SKIN_V: &str = include_str!("../shaders/skin_v.cg");
 const HUD_V: &str = include_str!("../shaders/hud_v.cg");
 const HUD_F: &str = include_str!("../shaders/hud_f.cg");
 
@@ -196,6 +199,7 @@ struct Settings {
     actors: bool,
     /// Draws the world this many times, to find how much GPU time is left.
     repeat: u32,
+    look: Look,
     /// A fixed camera: eye, target, vertical field of view.
     view: Option<(V3, V3, f32)>,
 }
@@ -217,6 +221,19 @@ fn apply_control(v: &Value, s: &mut Settings, sim: &mut Sim) {
     }
     if let Some(x) = v["repeat"].as_u64() {
         s.repeat = (x as u32).clamp(1, 8);
+    }
+    // `post`: {"bloom", "rays", "speed"} switch the passes; the rest are the look's numbers.
+    let post = &v["post"];
+    if post.is_object() {
+        let l = &mut s.look;
+        l.bloom = post["bloom"].as_bool().unwrap_or(l.bloom);
+        l.rays = post["rays"].as_bool().unwrap_or(l.rays);
+        l.speed = post["speed"].as_bool().unwrap_or(l.speed);
+        for (key, slot) in [("threshold", &mut l.threshold), ("bloomGain", &mut l.bloom_gain), ("raysGain", &mut l.rays_gain), ("vignette", &mut l.vignette), ("contrast", &mut l.contrast), ("saturation", &mut l.saturation), ("warm", &mut l.warm), ("cool", &mut l.cool)] {
+            if let Some(x) = post[key].as_f64() {
+                *slot = x as f32;
+            }
+        }
     }
     if v["reset"].as_bool() == Some(true) {
         sim.reset();
@@ -271,14 +288,12 @@ fn main() {
         let live = cfg!(feature = "usb-debug");
         let boot: Value = if live { hostfs::read(&format!("{}/boot.json", paths::HOST), 4096).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null) } else { Value::Null };
         let samples = boot["msaa"].as_u64().unwrap_or(DEFAULT_MSAA);
+        // The scene target is multisampled; the display surface it is composed onto is not.
         let msaa = match samples {
-            4 => g::SceGxmMultisampleMode_SCE_GXM_MULTISAMPLE_4X,
-            2 => g::SceGxmMultisampleMode_SCE_GXM_MULTISAMPLE_2X,
-            _ => g::SceGxmMultisampleMode_SCE_GXM_MULTISAMPLE_NONE,
+            4 => Msaa::X4,
+            2 => Msaa::X2,
+            _ => Msaa::None,
         };
-        // vita2d owns the display surface; asking for it multisampled before PocketJS's
-        // graphics module initializes makes every scene on it multisampled.
-        g::vita2d_init_advanced_with_msaa(1024 * 1024, msaa);
         if let Err(error) = graphics::init_with_pool(1024 * 1024) {
             pocketjs_vita::vita_log(format_args!("maneuver: graphics {error}"));
             return;
@@ -310,32 +325,36 @@ fn main() {
             let scene = Scene::from_meta(&meta);
 
             loading(font, &mut dev, &mut frame_no, &["Preparing programs".into()]);
-            let mut gpu = Gpu::new(live, msaa as u32)?;
+            let mut gpu = Gpu::new(live)?;
             let fog = scene.fog_srgb();
             let defines = format!(
-                "#define FOG_COLOR half3({:.5}, {:.5}, {:.5})\n#define FOG_DENSITY {:.7}\n#define UV_SCALE {:.1}\n#define COLOR_SCALE {:.1}\n",
+                "#define FOG_COLOR half3({:.5}, {:.5}, {:.5})\n#define FOG_DENSITY {:.7}\n#define UV_SCALE {:.1}\n#define COLOR_SCALE {:.1}\n#define BONES {}\n",
                 fog[0],
                 fog[1],
                 fog[2],
                 scene.fog_density,
                 pack::UV_SCALE,
-                pack::COLOR_SCALE
+                pack::COLOR_SCALE,
+                maneuver_sim::pose::BONES
             );
-            let world_prog = gpu.program("world", &defines, WORLD_V, WORLD_F, &Layout { attrs: &[("aPosition", 0, U16N, 3), ("aUv", 8, S16N, 2), ("aColor", 12, U8N, 4)], stride: 16 })?;
-            let color_prog = gpu.program("color", &defines, COLOR_V, COLOR_F, &Layout { attrs: &[("aPosition", 0, F32, 3), ("aColor", 12, U8N, 4)], stride: 16 })?;
-            let hud_prog = gpu.program("hud", &defines, HUD_V, HUD_F, &Layout { attrs: &[("aPosition", 0, F32, 2), ("aUv", 8, F32, 2), ("aColor", 16, U8N, 4)], stride: 20 })?;
+            let world_prog = gpu.program("world", &defines, WORLD_V, WORLD_F, &Layout { attrs: &[("aPosition", 0, U16N, 3), ("aUv", 8, S16N, 2), ("aColor", 12, U8N, 4)], stride: 16 }, msaa.gxm())?;
+            let color_prog = gpu.program("color", &defines, COLOR_V, COLOR_F, &Layout { attrs: &[("aPosition", 0, F32, 3), ("aColor", 12, U8N, 4)], stride: 16 }, msaa.gxm())?;
+            let skin_prog = gpu.program("skin", &defines, SKIN_V, COLOR_F, &Layout { attrs: &[("aPosition", 0, F32, 3), ("aNormal", 12, S8N, 4), ("aColor", 16, U8N, 4), ("aBones", 20, U8, 2), ("aWeights", 22, U8N, 2)], stride: 24 }, msaa.gxm())?;
+            let hud_prog = gpu.program("hud", &defines, HUD_V, HUD_F, &Layout { attrs: &[("aPosition", 0, F32, 2), ("aUv", 8, F32, 2), ("aColor", 16, U8N, 4)], stride: 20 }, 0)?;
+            let mut vram = Arena::new(Kind::Cdram, 16 * 1024 * 1024);
+            let mut targets = Arena::new(Kind::Main, 4 * 1024 * 1024);
+            let post = Post::new(&mut gpu, &mut vram, &mut targets, &defines, msaa)?;
             gpu.finish();
 
             loading(font, &mut dev, &mut frame_no, &["Uploading the world".into()]);
-            let mut vram = Arena::new(Kind::Cdram, 8 * 1024 * 1024);
             let per = (scene.super_cell / scene.cell).round().max(1.0) as i32;
             let world = world::World::load(&p, &mut vram, per)?;
             let hud = Hud::load(&p, &mut vram)?;
             let sim = maneuver_sim::worldfile::load(p.section(pack::SIMW)?).map_err(|e| e.to_string())?;
             let actors = Actors::load(&p, &scene, &sim)?;
-            Ok((meta, scene, gpu, world_prog, color_prog, hud_prog, world, hud, sim, actors, vram))
+            Ok((meta, scene, gpu, world_prog, color_prog, skin_prog, hud_prog, world, hud, sim, actors, vram, post, targets))
         })();
-        let (meta, scene, gpu, world_prog, color_prog, hud_prog, world, mut hud, mut sim, mut actors, vram) = match loaded {
+        let (meta, scene, gpu, world_prog, color_prog, skin_prog, hud_prog, world, mut hud, mut sim, mut actors, vram, mut post, _targets) = match loaded {
             Ok(x) => x,
             Err(e) => fail(font, &mut dev, &mut frame_no, e),
         };
@@ -343,14 +362,14 @@ fn main() {
         drop(bytes);
         let load_ms = t_load.elapsed().as_millis() as u64;
 
-        let ring_bytes = actors.frame_bytes(sim.dummies.len()) + Hud::VERTEX_BYTES + 4096;
+        let ring_bytes = actors.frame_bytes() + Hud::VERTEX_BYTES + 4096;
         let mut ring = match Ring::new(ring_bytes, 2) {
             Ok(r) => r,
             Err(e) => fail(font, &mut dev, &mut frame_no, e),
         };
         let mut fence = Fence::new(0, 2);
         let control = if live { control_watcher() } else { mpsc::channel().1 };
-        let mut set = Settings { auto: true, hud: true, stats: live, cull_cw: true, profile: false, lod_near: scene.lod_near, lod_mid: scene.lod_mid, world: true, actors: true, repeat: 1, view: None };
+        let mut set = Settings { auto: true, hud: true, stats: live, cull_cw: true, profile: false, lod_near: scene.lod_near, lod_mid: scene.lod_mid, world: true, actors: true, repeat: 1, look: Look::DEFAULT, view: None };
 
         // Sound: the synthesizer renders at 22.05 kHz; the host module doubles it for the port.
         let mut synth = maneuver_sim::audio::Synth::new();
@@ -463,10 +482,7 @@ fn main() {
 
             // -------------------------------------------------------------- the scene
             let t2 = Instant::now();
-            g::vita2d_pool_reset();
-            g::vita2d_start_drawing_advanced(core::ptr::null_mut(), 0);
-            g::sceGxmSetViewport(ctx, 480.0, 480.0, 272.0, -272.0, 0.0, 1.0);
-            g::sceGxmSetRegionClip(ctx, g::SceGxmRegionClipMode_SCE_GXM_REGION_CLIP_OUTSIDE, 0, 0, 959, 543);
+            let mut scene_error = post.begin_scene(ctx).err();
             actors.draw_sky(ctx, &color_prog, &vp, eye);
             if set.world {
                 world_prog.bind(ctx, false);
@@ -479,9 +495,19 @@ fn main() {
             if let (Some(f), true) = (&aframe, set.actors) {
                 // Inside the camera's near range the character would fill the frame.
                 let show = set.view.is_some() || (sim.cam.pos - sim.p.pos).len() > 1.7;
-                actor_stats = actors.draw_opaque(ctx, &color_prog, &vp, f, scene.fog_density, set.cull_cw, show);
+                actor_stats = actors.draw_skinned(ctx, &skin_prog, &vp, &sim, &scene, eye, set.cull_cw, show);
+                actors.draw_cloth(ctx, &color_prog, &vp, f, scene.fog_density, show);
                 actors.draw_blend(ctx, &color_prog, &vp, f, scene.fog_density);
             }
+            if scene_error.is_none() {
+                scene_error = post.finish_scene(ctx, &set.look, &vp, eye, scene.sun_dir).err();
+            }
+            if let Some(e) = scene_error {
+                pocketjs_vita::vita_log(format_args!("maneuver: {e}"));
+            }
+            g::vita2d_pool_reset();
+            g::vita2d_start_drawing_advanced(core::ptr::null_mut(), 0);
+            post.composite(ctx, &set.look, smoothstep(26.0, 58.0, sim.speed()) * if set.view.is_some() { 0.0 } else { 1.0 });
             hud.flush(ctx, &hud_prog, actors.quad_ib);
             // vita2d's overlay (the debug menu) expects its own viewport and no depth.
             g::sceGxmSetViewport(ctx, 480.0, 480.0, 272.0, -272.0, 0.5, 0.5);
@@ -519,7 +545,7 @@ fn main() {
                     "gpuMs": if set.profile { json!(gpu_ms) } else { Value::Null },
                     "world": {"draws": wstats.draws, "tris": wstats.tris, "near": wstats.near, "mid": wstats.mid, "far": wstats.far},
                     "actors": {"draws": actor_stats.0, "tris": actor_stats.1},
-                    "settings": {"auto": set.auto, "lodNear": set.lod_near, "lodMid": set.lod_mid, "cullCw": set.cull_cw, "profile": set.profile, "world": set.world, "actors": set.actors, "repeat": set.repeat},
+                    "settings": {"auto": set.auto, "lodNear": set.lod_near, "lodMid": set.lod_mid, "cullCw": set.cull_cw, "profile": set.profile, "world": set.world, "actors": set.actors, "repeat": set.repeat, "post": {"bloom": set.look.bloom, "rays": set.look.rays, "speed": set.look.speed}},
                     "player": {"pos": [sim.p.pos.x, sim.p.pos.y, sim.p.pos.z], "speed": sim.speed(), "gas": sim.p.gas, "tick": sim.tick, "kills": sim.run.kills, "laps": sim.auto.laps, "waypoint": sim.auto.wp},
                     "programs": {"compiled": gpu.compiled, "cached": gpu.cached},
                     "msaa": samples,

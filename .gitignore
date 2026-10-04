@@ -1,6 +1,9 @@
 # Build output
 /target/
 /vita/target/
+/psp/target/
+/n3ds/core/target/
+/n3ds/build/
 /dist/
 node_modules/
 /web/dist/

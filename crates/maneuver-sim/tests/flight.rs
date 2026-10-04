@@ -36,3 +36,19 @@ fn autopilot_covers_ground() {
     // A minute of flight: well over walking pace on average.
     assert!(distance > 900.0, "only {distance} m in a minute");
 }
+
+#[test]
+fn built_world_matches_the_source_world() {
+    use maneuver_sim::worldfile::{load, load_built, write_built};
+    let bytes = testworld::build();
+    let mut a = load(&bytes).unwrap();
+    let mut b = load_built(&write_built(&a)).unwrap();
+    for t in 0..900 {
+        let i = a.auto_input();
+        let j = b.auto_input();
+        a.tick(i);
+        b.tick(j);
+        assert_eq!(a.p.pos, b.p.pos, "tick {t}");
+    }
+    assert_eq!(a.dummies.len(), b.dummies.len());
+}

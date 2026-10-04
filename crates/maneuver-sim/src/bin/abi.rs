@@ -3,7 +3,7 @@
 
 use maneuver_sim::abi::{snap, ABI_VERSION};
 use maneuver_sim::collide::kind;
-use maneuver_sim::pose::{dim, part, PARTS};
+use maneuver_sim::pose::{bone, BONES, CLOAK_H, CLOAK_W, PARENT, ROPE_N};
 use maneuver_sim::sim::{act, btn, ev, hook, tune, RADIUS};
 
 fn main() {
@@ -15,7 +15,11 @@ fn main() {
         println!("  {name}: {at},");
     }
     println!("}} as const;");
-    println!("export const PARTS = {PARTS};");
+    println!("export const BONES = {BONES};");
+    println!("export const BONE_PARENT = {PARENT:?} as const;");
+    println!("export const CLOAK_W = {CLOAK_W};");
+    println!("export const CLOAK_H = {CLOAK_H};");
+    println!("export const ROPE_N = {ROPE_N};");
     println!("export const RADIUS = {RADIUS};");
     macro_rules! table {
         ($title:literal, $($m:ident :: $k:ident),* $(,)?) => {
@@ -33,12 +37,8 @@ fn main() {
     table!("HOOK", hook::IDLE, hook::FLYING, hook::ATTACHED, hook::RETRACT, hook::MISS);
     table!("KIND", kind::GROUND, kind::WALL, kind::ROOF, kind::STONE, kind::WOOD, kind::WATER, kind::NOHOOK);
     table!(
-        "PART", part::PELVIS, part::CHEST, part::HEAD, part::ARM_UL, part::ARM_LL, part::ARM_UR, part::ARM_LR, part::LEG_UL, part::LEG_LL, part::LEG_UR, part::LEG_LR, part::CAPE_A,
-        part::CAPE_B
-    );
-    table!(
-        "DIM", dim::PELVIS_Y, dim::HIP_X, dim::HIP_Y, dim::THIGH, dim::SHIN, dim::WAIST_Y, dim::CHEST, dim::SHOULDER_X, dim::SHOULDER_Y, dim::UPPER_ARM, dim::FOREARM, dim::CAPE_Y,
-        dim::CAPE_Z, dim::CAPE_SEG
+        "BONE", bone::PELVIS, bone::SPINE, bone::CHEST, bone::NECK, bone::HEAD, bone::CLAV_L, bone::ARM_UL, bone::ARM_LL, bone::HAND_L, bone::CLAV_R, bone::ARM_UR, bone::ARM_LR, bone::HAND_R, bone::LEG_UL,
+        bone::LEG_LL, bone::FOOT_L, bone::LEG_UR, bone::LEG_LR, bone::FOOT_R
     );
     table!("TUNE", tune::GAS_MAX, tune::RUN_SPEED, tune::HOOK_RANGE, tune::ZIP_RANGE, tune::SLASH_TIME, tune::SLASH_REACH, tune::CUT_SPEED, tune::V_MAX);
 }

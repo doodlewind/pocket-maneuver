@@ -5,7 +5,7 @@ use maneuver_pack::TexHeader;
 /// Level `level` of an RGBA image whose rows belong to strips delimited by
 /// `edges`. Each output texel averages the level-0 texels under it, taking
 /// only rows of the strip that holds the block's centre, so strips never mix.
-fn mip(rgba: &[u8], w: usize, h: usize, edges: &[usize], level: u32) -> (Vec<u8>, usize, usize) {
+pub fn mip(rgba: &[u8], w: usize, h: usize, edges: &[usize], level: u32) -> (Vec<u8>, usize, usize) {
     let f = 1usize << level;
     let (mw, mh) = ((w / f).max(1), (h / f).max(1));
     let strip_of = |row: usize| edges.windows(2).position(|e| row >= e[0] && row < e[1]).unwrap_or(0);

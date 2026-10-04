@@ -1,0 +1,42 @@
+// The frame as shown: the scene, plus bloom and light shafts, graded.
+//
+// uGlow:  x bloom gain, y shaft gain, z vignette, w speed blur (SPEED builds)
+// uGrade: x contrast, y saturation, z warmth of the highlights, w coolness of the shadows
+//
+// Taps: 0 the scene; 1 the screen as -1..1 for the vignette; 2..4 the scene
+// scaled about the centre, for the blur at speed.
+
+uniform sampler2D uScene;
+uniform sampler2D uBloom;
+uniform sampler2D uRays;
+uniform float4 uGlow;
+uniform float4 uGrade;
+
+half4 main(float2 vUv0 : TEXCOORD0, float2 vUv1 : TEXCOORD1
+#ifdef SPEED
+    , float2 vUv2 : TEXCOORD2, float2 vUv3 : TEXCOORD3, float2 vUv4 : TEXCOORD4
+#endif
+    ) : COLOR
+{
+    half3 c = (half3)tex2D(uScene, vUv0).rgb;
+    half edge = (half)dot(vUv1, vUv1);
+#ifdef SPEED
+    // Streak toward the centre, more at the rim: the middle of the frame stays sharp.
+    half3 smear = (c + (half3)tex2D(uScene, vUv2).rgb + (half3)tex2D(uScene, vUv3).rgb + (half3)tex2D(uScene, vUv4).rgb) * (half)0.25;
+    c = lerp(c, smear, saturate(edge * (half)uGlow.w));
+#endif
+#ifdef GLOW
+    half3 glow = (half3)tex2D(uBloom, vUv0).rgb * (half)uGlow.x + (half3)tex2D(uRays, vUv0).rgb * (half)uGlow.y;
+    // Screen: light adds without clipping what is already bright.
+    c = c + glow * ((half3)1.0 - c);
+#endif
+    half l = dot(c, half3(0.30, 0.59, 0.11));
+    c = lerp(half3(l, l, l), c, (half)uGrade.y);
+    c = (c - (half)0.5) * (half)uGrade.x + (half)0.5;
+    // Split tone: warm where it is light, cool where it is dark.
+    half3 warm = half3(1.0 + (half)uGrade.z, 1.0, 1.0 - (half)uGrade.z);
+    half3 cool = half3(1.0 - (half)uGrade.w, 1.0, 1.0 + (half)uGrade.w);
+    c = c * lerp(cool, warm, saturate(l * (half)1.4));
+    c = c * ((half)1.0 - edge * (half)uGlow.z);
+    return half4(c, 1.0);
+}

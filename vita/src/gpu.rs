@@ -17,6 +17,8 @@ pub struct Program {
     pub alpha: *mut g::SceGxmFragmentProgram,
     u_mvp: *const g::SceGxmProgramParameter,
     u_fog: *const g::SceGxmProgramParameter,
+    u_bones: *const g::SceGxmProgramParameter,
+    u_light: *const g::SceGxmProgramParameter,
 }
 
 impl Program {
@@ -44,6 +46,23 @@ impl Program {
     }
 }
 
+impl Program {
+    /// Uniforms of a skinned draw: the view-projection, three rows per bone, the light table and the haze density.
+    /// `bones` and `light` are uploaded at the lengths the program declares.
+    pub unsafe fn skin_uniforms(&self, ctx: *mut g::SceGxmContext, vp: &[f32; 16], bones: &[f32], light: &[f32; 16], fog: f32) {
+        let mut buf = core::ptr::null_mut();
+        g::sceGxmReserveVertexDefaultUniformBuffer(ctx, &mut buf);
+        if buf.is_null() || self.u_bones.is_null() || self.u_light.is_null() {
+            return;
+        }
+        g::sceGxmSetUniformDataF(buf, self.u_mvp, 0, 16, vp.as_ptr());
+        g::sceGxmSetUniformDataF(buf, self.u_bones, 0, bones.len() as u32, bones.as_ptr());
+        g::sceGxmSetUniformDataF(buf, self.u_light, 0, 16, light.as_ptr());
+        let v = [fog, 0.0, 0.0, 0.0];
+        g::sceGxmSetUniformDataF(buf, self.u_fog, 0, 4, v.as_ptr());
+    }
+}
+
 pub struct Gpu {
     pub patcher: Patcher,
     compiler: Option<Compiler>,
@@ -53,8 +72,6 @@ pub struct Gpu {
     /// Hashes of every program in use, for packaging.
     pub manifest: Vec<String>,
     live: bool,
-    /// The display surface's multisample mode; fragment programs are patched for it.
-    msaa: u32,
 }
 
 fn fnv64(parts: &[&[u8]]) -> u64 {
@@ -76,9 +93,9 @@ pub struct Layout<'a> {
 }
 
 impl Gpu {
-    pub unsafe fn new(live: bool, msaa: u32) -> Result<Gpu, String> {
+    pub unsafe fn new(live: bool) -> Result<Gpu, String> {
         let _ = std::fs::create_dir_all(paths::GXP_CACHE);
-        Ok(Gpu { patcher: Patcher::new(512 * 1024, 256 * 1024, 512 * 1024)?, compiler: None, compiled: 0, cached: 0, manifest: Vec::new(), live, msaa })
+        Ok(Gpu { patcher: Patcher::new(512 * 1024, 256 * 1024, 512 * 1024)?, compiler: None, compiled: 0, cached: 0, manifest: Vec::new(), live })
     }
 
     /// The GXP of a source: cached on the memory card, shipped in the package, or compiled now.
@@ -114,7 +131,7 @@ impl Gpu {
     }
 
     /// Compiles (or loads) a vertex and a fragment source and patches them for `layout`.
-    pub unsafe fn program(&mut self, name: &str, defines: &str, vs: &str, fs: &str, layout: &Layout) -> Result<Program, String> {
+    pub unsafe fn program(&mut self, name: &str, defines: &str, vs: &str, fs: &str, layout: &Layout, msaa: u32) -> Result<Program, String> {
         let vsrc = format!("{defines}{vs}");
         let fsrc = format!("{defines}{fs}");
         let vbytes = self.gxp(&format!("{name}_v"), &vsrc, Stage::Vertex)?;
@@ -127,11 +144,13 @@ impl Gpu {
             attrs.push(Attr { reg, offset: *offset, format: *format, count: *count, stream: 0 });
         }
         let vp = program::vertex_program(self.patcher.raw, &vs, &attrs, &[layout.stride])?;
-        let opaque = program::fragment_program(self.patcher.raw, &fs, Output::Uchar4, self.msaa, Blend::Opaque, vs.program())?;
-        let alpha = program::fragment_program(self.patcher.raw, &fs, Output::Uchar4, self.msaa, Blend::Alpha, vs.program())?;
+        let opaque = program::fragment_program(self.patcher.raw, &fs, Output::Uchar4, msaa, Blend::Opaque, vs.program())?;
+        let alpha = program::fragment_program(self.patcher.raw, &fs, Output::Uchar4, msaa, Blend::Alpha, vs.program())?;
         let u_mvp = vs.param("uMvp");
         let u_fog = vs.param("uFog");
-        Ok(Program { vs, fs, vp, opaque, alpha, u_mvp, u_fog })
+        let u_bones = vs.param("uBones");
+        let u_light = vs.param("uLight");
+        Ok(Program { vs, fs, vp, opaque, alpha, u_mvp, u_fog, u_bones, u_light })
     }
 
     /// The compiler is only needed while programs build.

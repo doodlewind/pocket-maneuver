@@ -11,6 +11,8 @@ export const KIND = { GROUND: 0, WALL: 1, ROOF: 2, STONE: 3, WOOD: 4, WATER: 5, 
 
 export const ALL: readonly Layer[] = [Layer.Near, Layer.Mid, Layer.Far];
 export const NEAR_MID: readonly Layer[] = [Layer.Near, Layer.Mid];
+/** Both far layers: what is not a house looks the same in each. */
+export const FARS: readonly Layer[] = [Layer.Far, Layer.Horizon];
 
 /** A horizontal frame: `o` on the ground, `r` to the right seen from the front, `n` out of the front. */
 export interface Frame {
@@ -91,14 +93,14 @@ export class World {
         for (const l of layers) {
           const geo = this.meshes.at(l, key[0], key[2]);
           const [vb, vt] = stripV(opts.top);
-          const a = mix(p0, p1, t1);
-          const b2 = mix(p3, p2, t1);
+          const a = mix(p0, p1, t0);
+          const b2 = mix(p3, p2, t0);
           const width = Math.hypot(b2[0] - a[0], b2[2] - a[2]) / opts.top.mPerU;
-          geo.quad(a, b2, mix(p3, p2, t0), mix(p0, p1, t0), [i * 0.37, i * 0.37 + width, vb, vt], opts.topTint ?? tint);
+          geo.quad(a, b2, mix(p3, p2, t1), mix(p0, p1, t1), [i * 0.37, i * 0.37 + width, vb, vt], opts.topTint ?? tint);
         }
       }
       const kind = opts.topKind ?? KIND.GROUND;
-      if (kind >= 0) this.col.quad(p1, p2, p3, p0, kind);
+      if (kind >= 0) this.col.quad(p0, p3, p2, p1, kind);
     } else if (opts.top) {
       const [vb, vt] = stripV(opts.top);
       const c: V3 = [pts.reduce((s, p) => s + p[0], 0) / n, pts[0][1] + y1, pts.reduce((s, p) => s + p[2], 0) / n];
@@ -290,6 +292,26 @@ export function emitHouse(w: World, h: House) {
     const cf: Frame = { o: at(f, cx - s, 0, cz + s), r: f.r, n: f.n };
     w.box(near, key, cf, s * 2, s * 2, H + h.rise * 0.35, H + h.rise + 0.9, STRIP.STONE, [0.62, 0.5, 0.44], -1, { top: STRIP.FLAT, topTint: [0.16, 0.14, 0.13], topKind: -1, rows: 1 });
   }
+}
+
+/**
+ * A run of houses as one mass for the horizon layer: a front and a back wall
+ * and one roof with its ridge along the street. `f` is the row's frame with
+ * its origin at the run's start; heights and colours are the run's averages.
+ */
+export function emitRowMass(w: World, f: Frame, length: number, depth: number, storeys: number, rise: number, plaster: Rgb, roof: Rgb, seed: number) {
+  const r = new Rng(seed);
+  const style = FACADE[0];
+  const n = Math.max(1, Math.min(Math.round(storeys), style.storeys));
+  const H = storeys * STOREY_M;
+  const key = at(f, length / 2, 0, -depth / 2);
+  const layers = [Layer.Horizon] as const;
+  const P = (x: number, y: number, z: number) => at(f, x, y, z);
+  const front = facadeUV(style, n, length, r);
+  const back = facadeUV(style, n, length, r);
+  w.quad(layers, key, P(0, 0, 0), P(length, 0, 0), P(length, H, 0), P(0, H, 0), front, plaster);
+  w.quad(layers, key, P(length, 0, -depth), P(0, 0, -depth), P(0, H, -depth), P(length, H, -depth), back, plaster);
+  w.gableRoof(layers, key, f, length, depth, H, rise, true, roof, { style, tint: plaster, u: front[0] }, false);
 }
 
 /** A point on the circle of radius `r` at angle `a`; angle 0 is +X and angles grow toward +Z. */

@@ -8,6 +8,8 @@ use std::path::Path;
 
 /// Floats per source vertex: position 3, normal 3, uv 2, tint 3.
 pub const STRIDE: usize = 11;
+/// Floats per skinned model vertex: position 3, normal 3, tint 3, two bones, the first bone's weight.
+pub const SKIN_STRIDE: usize = 12;
 
 pub mod layer {
     pub const BASE: i32 = 0;
@@ -15,6 +17,8 @@ pub mod layer {
     pub const MID: i32 = 2;
     pub const FAR: i32 = 3;
     pub const BACKDROP: i32 = 4;
+    /// The far layer for the handhelds, in 128 m cells.
+    pub const HORIZON: i32 = 5;
 }
 
 #[derive(Deserialize)]
@@ -74,9 +78,9 @@ pub fn sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn meshes(bytes: &[u8], magic: u32, head_len: usize) -> Result<Vec<Mesh>, String> {
+fn meshes(bytes: &[u8], magic: u32, version: i32, head_len: usize, stride: usize) -> Result<Vec<Mesh>, String> {
     let word = |at: usize| bytes.get(at..at + 4).map(|s| i32::from_le_bytes([s[0], s[1], s[2], s[3]])).ok_or("mesh file is truncated".to_string());
-    if word(0)? as u32 != magic || word(4)? != 1 {
+    if word(0)? as u32 != magic || word(4)? != version {
         return Err("mesh file has the wrong magic or version".into());
     }
     let n = word(8)? as usize;
@@ -91,8 +95,8 @@ fn meshes(bytes: &[u8], magic: u32, head_len: usize) -> Result<Vec<Mesh>, String
         let nv = word(at)? as usize;
         let ni = word(at + 4)? as usize;
         at += 8;
-        let vb = bytes.get(at..at + nv * STRIDE * 4).ok_or("mesh file is truncated")?;
-        at += nv * STRIDE * 4;
+        let vb = bytes.get(at..at + nv * stride * 4).ok_or("mesh file is truncated")?;
+        at += nv * stride * 4;
         let ib = bytes.get(at..at + ni * 4).ok_or("mesh file is truncated")?;
         at += ni * 4;
         let verts = vb.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
@@ -129,8 +133,8 @@ pub fn load(dir: &Path) -> Result<Ir, String> {
     Ok(Ir {
         manifest_sha256: sha256(&manifest_bytes),
         scene_json: serde_json::from_slice(&scene_bytes).map_err(|e| e.to_string())?,
-        buckets: meshes(&file("meshes.bin")?, u32::from_le_bytes(*b"MVIR"), 3)?,
-        models: meshes(&file("models.bin")?, u32::from_le_bytes(*b"MVMD"), 1)?,
+        buckets: meshes(&file("meshes.bin")?, u32::from_le_bytes(*b"MVIR"), 1, 3, STRIDE)?,
+        models: meshes(&file("models.bin")?, u32::from_le_bytes(*b"MVMD"), 2, 1, SKIN_STRIDE)?,
         world: file("world.mvsw")?,
         scene,
         atlas,

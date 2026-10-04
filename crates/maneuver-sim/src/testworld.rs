@@ -1,6 +1,8 @@
 //! A synthetic town for tests and the tuning harness: a grid of streets lined
 //! with gabled houses, a loop of waypoints and a few targets.
 
+use alloc::vec::Vec;
+
 use crate::collide::kind;
 use crate::math::*;
 use crate::worldfile::Builder;

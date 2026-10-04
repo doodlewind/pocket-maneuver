@@ -1,0 +1,42 @@
+// Skinned models: the player and the giants. Two bones per vertex; uBones
+// holds three rows per bone, taking a bind-pose position to world space.
+// Lighting is the scene's sun and hemisphere, computed per vertex; the tint
+// is sRGB, so the light is encoded before it multiplies (as the bake does).
+
+void main(
+    float3 aPosition,
+    float4 aNormal,
+    float4 aColor,
+    float2 aBones,
+    float2 aWeights,
+    uniform float4x4 uMvp,
+    uniform float4 uBones[3 * BONES],
+    uniform float4 uLight[4],
+    uniform float4 uFog,
+    out float4 oPosition : POSITION,
+    out float4 oColor : TEXCOORD0,
+    out float oFog : TEXCOORD1)
+{
+    float4 p = float4(aPosition, 1.0);
+    float3 world = float3(0.0, 0.0, 0.0);
+    float3 n = float3(0.0, 0.0, 0.0);
+    for (int k = 0; k < 2; k++) {
+        int j = (int)aBones[k] * 3;
+        float w = aWeights[k];
+        float4 r0 = uBones[j];
+        float4 r1 = uBones[j + 1];
+        float4 r2 = uBones[j + 2];
+        world += float3(dot(r0, p), dot(r1, p), dot(r2, p)) * w;
+        n += float3(dot(r0.xyz, aNormal.xyz), dot(r1.xyz, aNormal.xyz), dot(r2.xyz, aNormal.xyz)) * w;
+    }
+    n = normalize(n);
+    float4 clip = mul(uMvp, float4(world, 1.0));
+    oPosition = clip;
+    float ndl = max(dot(n, uLight[0].xyz), 0.0) * uLight[0].w;
+    float up = 0.5 + 0.5 * n.y;
+    float3 light = uLight[1].xyz * ndl + lerp(uLight[3].xyz, uLight[2].xyz, up) * 0.92;
+    float3 encoded = pow(max(light, float3(0.0001, 0.0001, 0.0001)), float3(0.4545, 0.4545, 0.4545));
+    oColor = float4(aColor.rgb * encoded, 1.0);
+    float d = clip.w * uFog.x;
+    oFog = 1.0 - exp(-d * d);
+}

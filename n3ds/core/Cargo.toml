@@ -1,0 +1,33 @@
+# The simulation and the device-independent runtime behind a C interface, for
+# the 3DS host in ../src. citro3d is a C library made mostly of `static inline`
+# functions, so the renderer is C and this crate is a static library.
+#
+# Standalone workspace: armv6k-nintendo-3ds needs a nightly compiler and
+# build-std (.cargo/config.toml, rust-toolchain.toml).
+#
+#   cargo build --release      (in this directory)
+
+[package]
+name = "maneuver-n3ds-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "maneuver_n3ds_core"
+crate-type = ["staticlib"]
+
+[dependencies]
+# The ARM11's VFP has a square root instruction; the transcendentals stay libm's (it has doubles).
+maneuver-sim = { path = "../../crates/maneuver-sim", default-features = false, features = ["hw-sqrt"] }
+maneuver-pack = { path = "../../crates/maneuver-pack", default-features = false }
+maneuver-handheld = { path = "../../crates/maneuver-handheld", default-features = false }
+
+[profile.release]
+# The target defaults to unwinding; a static library in a libctru program has no unwinder.
+panic = "abort"
+opt-level = 3
+codegen-units = 1
+lto = true
+
+[workspace]

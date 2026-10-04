@@ -11,8 +11,11 @@ import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { ATLAS_H, ATLAS_W, paintAtlas, STRIP, FACADE } from "../src/world/atlas";
 import { generate } from "../src/world/city";
-import { CELL, Geo, Layer, STRIDE, SUPER } from "../src/world/geo";
-import { characterParts, targetModel } from "../src/world/models";
+import { CELL, Geo, HORIZON, Layer, STRIDE, SUPER } from "../src/world/geo";
+import { buildScout } from "../src/world/scout";
+import { SKIN_STRIDE, SkinModel } from "../src/world/sdf";
+import { buildTitan } from "../src/world/titan";
+import { Sim } from "../src/sim/sim";
 import { SCENE } from "../src/world/scene";
 import { skyColor } from "../src/render/sky";
 import { writeWorldFile } from "../src/world/worldfile";
@@ -48,19 +51,53 @@ function meshBytes(header: number[], entries: { head: number[]; geo: Geo }[]): U
   return bytes;
 }
 
+/** Skinned models: id, vertex count, index count, then 12 floats per vertex and `u32` indices. */
+function modelBytes(models: { id: number; model: SkinModel }[]): Uint8Array {
+  let size = 12;
+  for (const m of models) size += 12 + m.model.v.byteLength + m.model.i.byteLength;
+  const bytes = new Uint8Array(size);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0x444d564d, true);
+  view.setUint32(4, 2, true);
+  view.setUint32(8, models.length, true);
+  let at = 12;
+  for (const m of models) {
+    view.setInt32(at, m.id, true);
+    view.setInt32(at + 4, m.model.v.length / SKIN_STRIDE, true);
+    view.setInt32(at + 8, m.model.i.length, true);
+    at += 12;
+    bytes.set(new Uint8Array(m.model.v.buffer, m.model.v.byteOffset, m.model.v.byteLength), at);
+    at += m.model.v.byteLength;
+    bytes.set(new Uint8Array(m.model.i.buffer, m.model.i.byteOffset, m.model.i.byteLength), at);
+    at += m.model.i.byteLength;
+  }
+  return bytes;
+}
+
 const t0 = performance.now();
 const gen = generate(seed);
 const buckets = gen.world.meshes.sorted().filter((b) => b.geo.ni > 0);
-const target = targetModel();
+// Models are built on the simulation's bind poses: the player (0 detailed, 1 and 2 coarser), then the three giant
+// builds at four mesh densities (10.., 20.., 30.., 40..). A device profile names the ones it packs.
+const wasm = await Bun.file(join(import.meta.dir, "../public/sim/maneuver_sim.wasm")).arrayBuffer();
+const sim = await Sim.load(wasm, null, 0);
+const models = [
+  { id: 0, model: buildScout(sim.bind(0)) },
+  { id: 1, model: buildScout(sim.bind(0), [0.04, 0.02]) },
+  { id: 2, model: buildScout(sim.bind(0), [0.052, 0.026]) },
+];
+for (let v = 0; v < 3; v++) {
+  models.push({ id: 10 + v, model: buildTitan(v, sim.bind(1 + v), 1 / 100) });
+  models.push({ id: 20 + v, model: buildTitan(v, sim.bind(1 + v), 1 / 36) });
+  models.push({ id: 30 + v, model: buildTitan(v, sim.bind(1 + v), 0.045, 0.009) });
+  models.push({ id: 40 + v, model: buildTitan(v, sim.bind(1 + v), 0.075, 0.02) });
+}
 const files: Record<string, Uint8Array> = {
   "meshes.bin": meshBytes(
     [0x5249564d, 1, buckets.length],
     buckets.map((b) => ({ head: [b.layer, b.cx, b.cz], geo: b.geo })),
   ),
-  "models.bin": meshBytes(
-    [0x444d564d, 1, characterParts().length + 2],
-    [...characterParts().map((geo, i) => ({ head: [i], geo })), { head: [100], geo: target.body }, { head: [101], geo: target.nape }],
-  ),
+  "models.bin": modelBytes(models),
   "atlas.rgba": new Uint8Array(paintAtlas(seed).buffer),
   "world.mvsw": writeWorldFile(gen.world.col, gen.entities),
 };
@@ -91,12 +128,13 @@ const scene = {
   ...SCENE,
   cell: CELL,
   superCell: SUPER,
+  horizonCell: HORIZON,
   atlas: { width: ATLAS_W, height: ATLAS_H, stripEdges: [...edges].sort((a, b) => a - b) },
   skyTable: { elevations: [-2, 16], azimuths: 24, colors: sky },
   entities: { dummies: gen.entities.dummies.length, depots: gen.entities.depots.length, waypoints: gen.entities.waypoints.length, spawn: gen.entities.spawn },
   source: {
-    buckets: { base: layerCount(Layer.Base), near: layerCount(Layer.Near), mid: layerCount(Layer.Mid), far: layerCount(Layer.Far), backdrop: layerCount(Layer.Backdrop) },
-    triangles: [Layer.Base, Layer.Near, Layer.Mid, Layer.Far, Layer.Backdrop].map((l) => gen.world.meshes.triangles(l)),
+    buckets: { base: layerCount(Layer.Base), near: layerCount(Layer.Near), mid: layerCount(Layer.Mid), far: layerCount(Layer.Far), backdrop: layerCount(Layer.Backdrop), horizon: layerCount(Layer.Horizon) },
+    triangles: [Layer.Base, Layer.Near, Layer.Mid, Layer.Far, Layer.Backdrop, Layer.Horizon].map((l) => gen.world.meshes.triangles(l)),
     collisionTriangles: gen.world.col.k.length,
   },
 };

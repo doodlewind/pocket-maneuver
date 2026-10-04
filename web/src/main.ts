@@ -23,8 +23,16 @@ const seed = Number(q.get("seed") ?? 2026);
 const shot = q.has("shot");
 const auto = q.has("auto");
 const fixed = q.get("view")?.split(",").map(Number);
+/** `chase=dx,dy,dz,fov`: a camera at that offset from the player, looking at them. */
+const chase = q.get("chase")?.split(",").map(Number);
 
 const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
+if (q.has("model")) {
+  const { preview } = await import("./preview");
+  await preview(q, canvas);
+  // The preview owns the page.
+  await new Promise(() => {});
+}
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: shot });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
@@ -41,7 +49,7 @@ const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(new THREE.Color().setRGB(...SCENE.fog), SCENE.fogDensity);
 const view = new WorldView(gen.world.meshes, atlas);
 scene.add(view.group);
-const actors = new Actors(view.material, gen.entities);
+const actors = new Actors(sim, gen.entities);
 scene.add(actors.group);
 const sky = makeSky();
 scene.add(sky);
@@ -93,6 +101,11 @@ function draw(dt: number) {
     camera.up.set(0, 1, 0);
     camera.lookAt(fixed[3], fixed[4], fixed[5]);
     camera.fov = fixed[6] ?? 62;
+  } else if (chase && chase.length >= 3) {
+    camera.position.set(s[SNAP.POS] + chase[0], s[SNAP.POS + 1] + chase[1], s[SNAP.POS + 2] + chase[2]);
+    camera.up.set(0, 1, 0);
+    camera.lookAt(s[SNAP.POS], s[SNAP.POS + 1] + 0.3, s[SNAP.POS + 2]);
+    camera.fov = chase[3] ?? 45;
   } else {
     const shake = s[SNAP.CAM_SHAKE] * 0.25;
     const t = s[SNAP.TICK];
@@ -107,7 +120,7 @@ function draw(dt: number) {
   pv.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
   frustum.setFromProjectionMatrix(pv);
   stats = view.select(camera.position, frustum);
-  actors.update(s, sim.dummies(), dt);
+  actors.update(s, sim.dummies(), dt, camera.position);
   sky.position.copy(camera.position);
   // The shadow map follows the eye in steps, so its texels do not swim.
   const step = 420 / 4096;
@@ -120,8 +133,12 @@ function draw(dt: number) {
   events(s);
 }
 
+/** `stick=lx,ly`: a held left stick in shot mode, to walk or run without a player. */
+const stick = q.get("stick")?.split(",").map(Number);
+
 function tick() {
   if (auto) sim.tickAuto();
+  else if (stick) sim.tick(0, stick[0], stick[1], 0, 0);
   else {
     const p = input.read();
     sim.tick(p.buttons, p.lx, p.ly, p.rx, p.ry);
@@ -147,11 +164,15 @@ function startAudio() {
 if (shot) {
   document.body.classList.add("shot");
   const n = Number(q.get("ticks") ?? 1);
-  for (let i = 0; i < n; i++) tick();
+  const fires: number[] = [];
+  for (let i = 0; i < n; i++) {
+    tick();
+    if (sim.snapshot()[SNAP.EVENTS] & (EV.HOOK_ATTACH_L | EV.HOOK_ATTACH_R)) fires.push(i + 1);
+  }
   draw(1 / 60);
   draw(1 / 60);
   const s = sim.snapshot();
-  document.title = `shot-ready ${JSON.stringify({ ...stats, calls: renderer.info.render.calls, buildMs: Math.round(buildMs), pos: [...s.subarray(SNAP.POS, SNAP.POS + 3)].map((v) => Math.round(v)), speed: Math.round(s[SNAP.SPEED]) })}`;
+  document.title = `shot-ready ${JSON.stringify({ ...stats, calls: renderer.info.render.calls, buildMs: Math.round(buildMs), pos: [...s.subarray(SNAP.POS, SNAP.POS + 3)].map((v) => Math.round(v)), speed: Math.round(s[SNAP.SPEED]), attach: fires.slice(-6), actorTris: actors.triangles })}`;
 } else {
   for (const type of ["keydown", "pointerdown"]) window.addEventListener(type, startAudio, { once: true });
   let last = performance.now();

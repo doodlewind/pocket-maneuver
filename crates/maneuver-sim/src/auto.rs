@@ -114,12 +114,15 @@ impl Sim {
                     _ => {}
                 }
             }
-            if !any_out && a.cool == 0 && abs(err) < 0.9 {
+            // Fire only where a wire would bite: the reticles are the anchors the next press takes.
+            let can = [self.reticle[0].valid, self.reticle[1].valid];
+            if !any_out && a.cool == 0 && abs(err) < 0.9 && (can[0] || can[1]) {
                 if speed < 14.0 {
-                    b |= btn::HOOK_L | btn::HOOK_R;
+                    b |= if can[0] { btn::HOOK_L } else { 0 } | if can[1] { btn::HOOK_R } else { 0 };
                 } else {
-                    b |= if a.side == 0 { btn::HOOK_L } else { btn::HOOK_R };
-                    a.side ^= 1;
+                    let side = if can[a.side as usize] { a.side } else { a.side ^ 1 };
+                    b |= if side == 0 { btn::HOOK_L } else { btn::HOOK_R };
+                    a.side = side ^ 1;
                 }
             }
             // Gas while there is some to spare; the wires alone carry the rest.
@@ -128,7 +131,8 @@ impl Sim {
                 if spare && (speed < 30.0 || alt < -3.0) {
                     b |= btn::GAS;
                 }
-            } else if spare && (alt < -8.0 || speed < 8.0) {
+            } else if spare && (alt < -8.0 || speed < 8.0 || !(can[0] || can[1])) {
+                // Nothing to hook: fly on gas toward the next waypoint.
                 b |= btn::GAS;
             }
         }

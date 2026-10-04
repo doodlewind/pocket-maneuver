@@ -1,0 +1,17 @@
+{
+  "name": "n3ds60",
+  "target": "3ds",
+  "presentation": { "render": [400, 240], "display": [400, 240], "targetFps": 60 },
+  "texture": { "format": "pica-rgb565", "maxMips": 7 },
+  "bake": { "sunRays": 4, "sunSpread": 0.02, "aoRays": 16, "aoReach": 14.0 },
+  "limits": { "maxMeshVertices": 65535, "maxPackBytes": 31457280 },
+  "font": { "sizes": [10, 13, 20], "atlas": [256, 256] },
+  "handheld": {
+    "page": [512, 512],
+    "lod": { "near": 64, "mid": 170, "far": 1200 },
+    "fog": { "near": 120, "far": 1500, "density": 0.0012 },
+    "clip": { "near": 0.35, "far": 4200 },
+    "titan": { "near": 60, "far": 420, "max": 8 },
+    "models": { "scout": 1, "titanNear": [20, 21, 22], "titanFar": [30, 31, 32] }
+  }
+}

@@ -1,38 +1,97 @@
 //! Scalar f32 math. Transcendentals go through `libm` so the wasm build, the
 //! host build and the Vita build produce the same bits for the same inputs.
+//!
+//! Two features change that for small machines. `hw-sqrt` takes the square
+//! root from the FPU (the same bits as `libm`, without its loop).
+//! `single-float` swaps the transcendentals for kernels that never use `f64`
+//! (`fastmath`): the results differ from `libm` in the last places, so such a
+//! build repeats against itself only.
 
 use core::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
 pub const PI: f32 = core::f32::consts::PI;
 pub const TAU: f32 = core::f32::consts::TAU;
 
+#[cfg(not(feature = "single-float"))]
+mod kernel {
+    #[inline]
+    pub fn sin(x: f32) -> f32 {
+        libm::sinf(x)
+    }
+    #[inline]
+    pub fn cos(x: f32) -> f32 {
+        libm::cosf(x)
+    }
+    #[inline]
+    pub fn tan(x: f32) -> f32 {
+        libm::tanf(x)
+    }
+    #[inline]
+    pub fn atan2(y: f32, x: f32) -> f32 {
+        libm::atan2f(y, x)
+    }
+    #[inline]
+    pub fn asin(x: f32) -> f32 {
+        libm::asinf(x)
+    }
+    #[inline]
+    pub fn acos(x: f32) -> f32 {
+        libm::acosf(x)
+    }
+    #[inline]
+    pub fn exp(x: f32) -> f32 {
+        libm::expf(x)
+    }
+}
+
+#[cfg(feature = "single-float")]
+mod kernel {
+    pub use crate::fastmath::{atan2, cos, exp, sin, tan};
+    #[inline]
+    pub fn asin(x: f32) -> f32 {
+        crate::fastmath::asin(x, super::sqrt)
+    }
+    #[inline]
+    pub fn acos(x: f32) -> f32 {
+        core::f32::consts::FRAC_PI_2 - asin(x)
+    }
+}
+
 #[inline]
 pub fn sin(x: f32) -> f32 {
-    libm::sinf(x)
+    kernel::sin(x)
 }
 #[inline]
 pub fn cos(x: f32) -> f32 {
-    libm::cosf(x)
+    kernel::cos(x)
 }
 #[inline]
 pub fn tan(x: f32) -> f32 {
-    libm::tanf(x)
+    kernel::tan(x)
 }
 #[inline]
 pub fn atan2(y: f32, x: f32) -> f32 {
-    libm::atan2f(y, x)
+    kernel::atan2(y, x)
 }
 #[inline]
 pub fn asin(x: f32) -> f32 {
-    libm::asinf(clamp(x, -1.0, 1.0))
+    kernel::asin(clamp(x, -1.0, 1.0))
 }
+#[cfg(not(feature = "hw-sqrt"))]
 #[inline]
 pub fn sqrt(x: f32) -> f32 {
     libm::sqrtf(x)
 }
+#[cfg(feature = "hw-sqrt")]
+#[inline]
+#[allow(unused_unsafe)]
+pub fn sqrt(x: f32) -> f32 {
+    // Safe on current compilers, `unsafe` on older ones.
+    unsafe { core::intrinsics::sqrtf32(x) }
+}
 #[inline]
 pub fn exp(x: f32) -> f32 {
-    libm::expf(x)
+    kernel::exp(x)
 }
 #[inline]
 pub fn floor(x: f32) -> f32 {
@@ -299,4 +358,133 @@ impl M34 {
     pub fn mul(&self, o: &M34) -> M34 {
         M34 { r: self.r.mul(&o.r), t: self.apply(o.t) }
     }
+}
+
+impl M3 {
+    pub fn transpose(&self) -> M3 {
+        M3 { x: v3(self.x.x, self.y.x, self.z.x), y: v3(self.x.y, self.y.y, self.z.y), z: v3(self.x.z, self.y.z, self.z.z) }
+    }
+    pub fn scaled(&self, s: f32) -> M3 {
+        M3 { x: self.x * s, y: self.y * s, z: self.z * s }
+    }
+}
+
+impl M34 {
+    /// Inverse of a rigid transform (rotation and translation, no scale).
+    pub fn inverse_rigid(&self) -> M34 {
+        let r = self.r.transpose();
+        M34 { r, t: -r.apply(self.t) }
+    }
+}
+
+/// Unit quaternion. Bone rotations blend as quaternions and convert to `M3` for kinematics.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Quat {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub w: f32,
+}
+
+impl Quat {
+    pub const ID: Quat = Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 };
+
+    pub fn axis_angle(axis: V3, a: f32) -> Quat {
+        let (s, c) = (sin(a * 0.5), cos(a * 0.5));
+        Quat { x: axis.x * s, y: axis.y * s, z: axis.z * s, w: c }
+    }
+    /// `Rz(z) · Rx(x) · Ry(y)`: spread, then swing, then twist.
+    pub fn euler(x: f32, y: f32, z: f32) -> Quat {
+        Quat::axis_angle(v3(0.0, 0.0, 1.0), z).mul(Quat::axis_angle(v3(1.0, 0.0, 0.0), x)).mul(Quat::axis_angle(v3(0.0, 1.0, 0.0), y))
+    }
+    /// The shortest rotation that takes unit `a` to unit `b`.
+    pub fn from_to(a: V3, b: V3) -> Quat {
+        let d = a.dot(b);
+        if d < -0.9999 {
+            let axis = a.cross(v3(1.0, 0.0, 0.0));
+            let axis = if axis.len2() < 1e-6 { a.cross(v3(0.0, 0.0, 1.0)) } else { axis };
+            return Quat::axis_angle(axis.norm(), PI);
+        }
+        let c = a.cross(b);
+        Quat { x: c.x, y: c.y, z: c.z, w: 1.0 + d }.normalized()
+    }
+    #[allow(clippy::should_implement_trait)]
+    pub fn mul(self, o: Quat) -> Quat {
+        Quat {
+            x: self.w * o.x + self.x * o.w + self.y * o.z - self.z * o.y,
+            y: self.w * o.y - self.x * o.z + self.y * o.w + self.z * o.x,
+            z: self.w * o.z + self.x * o.y - self.y * o.x + self.z * o.w,
+            w: self.w * o.w - self.x * o.x - self.y * o.y - self.z * o.z,
+        }
+    }
+    pub fn normalized(self) -> Quat {
+        let l = sqrt(self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w);
+        if l < 1e-9 {
+            return Quat::ID;
+        }
+        let k = 1.0 / l;
+        Quat { x: self.x * k, y: self.y * k, z: self.z * k, w: self.w * k }
+    }
+    /// Normalized linear blend along the shorter arc.
+    pub fn nlerp(self, o: Quat, t: f32) -> Quat {
+        let s = if self.x * o.x + self.y * o.y + self.z * o.z + self.w * o.w < 0.0 { -1.0 } else { 1.0 };
+        Quat { x: lerp(self.x, o.x * s, t), y: lerp(self.y, o.y * s, t), z: lerp(self.z, o.z * s, t), w: lerp(self.w, o.w * s, t) }.normalized()
+    }
+    pub fn m3(self) -> M3 {
+        let (x, y, z, w) = (self.x, self.y, self.z, self.w);
+        M3 {
+            x: v3(1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y + z * w), 2.0 * (x * z - y * w)),
+            y: v3(2.0 * (x * y - z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + x * w)),
+            z: v3(2.0 * (x * z + y * w), 2.0 * (y * z - x * w), 1.0 - 2.0 * (x * x + y * y)),
+        }
+    }
+    pub fn rotate(self, v: V3) -> V3 {
+        self.m3().apply(v)
+    }
+    pub fn conj(self) -> Quat {
+        Quat { x: -self.x, y: -self.y, z: -self.z, w: self.w }
+    }
+}
+
+/// A damped spring toward zero that takes velocity kicks: follow-through after a jolt.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Spring {
+    pub x: f32,
+    pub v: f32,
+}
+
+impl Spring {
+    /// Advances `dt` with angular frequency `w` and damping ratio `z`, pulled toward `target`.
+    pub fn step(&mut self, target: f32, w: f32, z: f32, dt: f32) {
+        let a = (target - self.x) * w * w - self.v * 2.0 * z * w;
+        self.v += a * dt;
+        self.x += self.v * dt;
+    }
+}
+
+impl M3 {
+    /// The rotation as a quaternion (the matrix must be orthonormal).
+    pub fn quat(&self) -> Quat {
+        let (m00, m11, m22) = (self.x.x, self.y.y, self.z.z);
+        let trace = m00 + m11 + m22;
+        let q = if trace > 0.0 {
+            let s = sqrt(trace + 1.0) * 2.0;
+            Quat { w: 0.25 * s, x: (self.y.z - self.z.y) / s, y: (self.z.x - self.x.z) / s, z: (self.x.y - self.y.x) / s }
+        } else if m00 > m11 && m00 > m22 {
+            let s = sqrt(1.0 + m00 - m11 - m22) * 2.0;
+            Quat { w: (self.y.z - self.z.y) / s, x: 0.25 * s, y: (self.y.x + self.x.y) / s, z: (self.z.x + self.x.z) / s }
+        } else if m11 > m22 {
+            let s = sqrt(1.0 + m11 - m00 - m22) * 2.0;
+            Quat { w: (self.z.x - self.x.z) / s, x: (self.y.x + self.x.y) / s, y: 0.25 * s, z: (self.z.y + self.y.z) / s }
+        } else {
+            let s = sqrt(1.0 + m22 - m00 - m11) * 2.0;
+            Quat { w: (self.x.y - self.y.x) / s, x: (self.z.x + self.x.z) / s, y: (self.z.y + self.y.z) / s, z: 0.25 * s }
+        };
+        q.normalized()
+    }
+}
+
+#[inline]
+pub fn acos(x: f32) -> f32 {
+    kernel::acos(clamp(x, -1.0, 1.0))
 }

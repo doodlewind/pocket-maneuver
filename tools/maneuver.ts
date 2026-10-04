@@ -5,7 +5,7 @@
 //   bun tools/maneuver.ts sim              wasm build of crates/maneuver-sim + web/src/sim/abi.gen.ts
 //   bun tools/maneuver.ts shot [...]       headless capture of the web reference
 //   bun tools/maneuver.ts export           WorldIR from the generator → .pocket-build/world/ir
-//   bun tools/maneuver.ts cook             export, then compile the device pack and its receipt
+//   bun tools/maneuver.ts cook [--profile vita60|psp60|n3ds60] [--no-export]   export, then compile a device pack and its receipt
 //   bun tools/maneuver.ts build|sync|native|serve|status|capture|ctl|bench   the Vita loop (tools/vita.ts)
 
 import { $ } from "bun";
@@ -28,8 +28,11 @@ async function exportWorld(rest: string[]) {
   await $`bun web/scripts/export-world.ts ${rest}`.cwd(ROOT);
 }
 
-async function cook() {
-  await $`cargo run --release -q -p maneuver-cook -- --in .pocket-build/world/ir --out .pocket-build/world/walled-town.vita60.pack --profile profiles/vita60.json --font vendor/pocketjs/assets/fonts/InterDisplay-Bold.ttf`.cwd(ROOT);
+/** Compiles the pack of one device profile (`--profile vita60|psp60|n3ds60`, default vita60). */
+async function cook(rest: string[]) {
+  const at = rest.indexOf("--profile");
+  const profile = at >= 0 ? rest[at + 1] : "vita60";
+  await $`cargo run --release -q -p maneuver-cook -- --in .pocket-build/world/ir --out .pocket-build/world/walled-town.${profile}.pack --profile profiles/${profile}.json --font vendor/pocketjs/assets/fonts/InterDisplay-Bold.ttf`.cwd(ROOT);
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -42,7 +45,7 @@ switch (cmd) {
     break;
   case "cook":
     if (!rest.includes("--no-export")) await exportWorld([]);
-    await cook();
+    await cook(rest);
     break;
   case "build":
   case "sync":
