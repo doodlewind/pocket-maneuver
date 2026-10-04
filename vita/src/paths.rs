@@ -9,5 +9,29 @@ pub const DATA: &str = "ux0:data/pocket-maneuver";
 pub const GXP_CACHE: &str = "ux0:data/pocket-maneuver/gxp";
 /// Programs shipped in the package.
 pub const GXP_PACKAGED: &str = "app0:gxp";
-/// The world pack: the development copy first, then the packaged one.
-pub const PACKS: [&str; 3] = ["host0:maneuver/world.pack", "app0:world.pack", "ux0:data/pocket-maneuver/world.pack"];
+/// What the interface asked to have stored, in the data folder.
+pub const INTERFACE_FILE: &str = "interface.json";
+
+/// Paths a shipped file (`world.pack`, `maneuver.js`, `maneuver.pak`) is
+/// looked for at, in order: the USB share (development builds), the package,
+/// the data folder.
+pub fn candidates(name: &str) -> Vec<String> {
+    let mut v = Vec::new();
+    if cfg!(feature = "usb-debug") {
+        v.push(format!("{HOST}/{name}"));
+    }
+    v.push(format!("app0:{name}"));
+    v.push(format!("{DATA}/{name}"));
+    v
+}
+
+/// Writes a file in the data folder through a temporary file, so a power-off
+/// mid-write leaves the previous version.
+pub fn write_text(name: &str, text: &str) {
+    let _ = std::fs::create_dir_all(DATA);
+    let (tmp, path) = (format!("{DATA}/{name}.tmp"), format!("{DATA}/{name}"));
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}

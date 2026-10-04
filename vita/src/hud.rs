@@ -1,5 +1,6 @@
-//! Interface drawing in display pixels: solid rectangles and text from the
-//! pack's glyph atlas, batched into one draw.
+//! The marks on the world, in display pixels: solid quads and text from the
+//! pack's glyph atlas, batched into one draw. Everything else on the screen
+//! is the interface's (`interface.rs`).
 
 use maneuver_pack::{self as pack, FontHeader, Glyph, Pack};
 use pocket_vita_gxm::mem::Arena;
@@ -8,7 +9,8 @@ use vita2d_sys as g;
 
 use crate::gpu::{self, Program};
 
-pub const MAX_QUADS: usize = 1024;
+/// Three reticles, eighteen streaks, the target marker and its distance fit several times over.
+pub const MAX_QUADS: usize = 128;
 
 #[repr(C)]
 #[derive(Clone, Copy)]

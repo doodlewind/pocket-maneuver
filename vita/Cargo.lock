@@ -116,6 +116,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "maneuver-interface"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "libquickjs-sys",
+ "maneuver-sim",
+]
+
+[[package]]
 name = "maneuver-pack"
 version = "0.1.0"
 
@@ -137,6 +146,7 @@ name = "pocket-maneuver-vita"
 version = "0.1.0"
 dependencies = [
  "libm",
+ "maneuver-interface",
  "maneuver-pack",
  "maneuver-sim",
  "pocket-vita-gxm",
