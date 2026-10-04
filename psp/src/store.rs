@@ -74,8 +74,23 @@ pub unsafe fn locate() {
     for file in [SCRIPT, PAK, KEPT] {
         FOUND[file] = sceIoOpen(NAMES[file][!LOCAL as usize].as_ptr(), IoOpenFlags::RD_ONLY, 0);
     }
-    WAKE = sceKernelCreateSema(b"maneuver_store\0".as_ptr(), 0, 0, 64, ptr::null_mut());
+    WAKE = create_sema(b"maneuver_store\0", 64);
     LAST_CODE = WAKE.0.min(0);
+}
+
+// The kernel reads a call's fifth argument from a register (MIPS EABI's a4); Rust's ABI puts it on the
+// stack, and rust-psp bridges the two per function with `i5`. Its `sceKernelCreateSema` lacks the bridge,
+// so the kernel sees whatever the register held and answers ILLEGAL_ADDR unless that was zero. The call
+// goes through the bridge here.
+extern "C" {
+    fn i5(a: u32, b: u32, c: u32, d: u32, e: u32, function: unsafe extern "C" fn(u32, u32, u32, u32, u32) -> u32) -> u32;
+    #[allow(clashing_extern_declarations)]
+    fn __sceKernelCreateSema_stub(name: u32, attributes: u32, initial: u32, max: u32, option: u32) -> u32;
+}
+
+/// A semaphore that starts at zero and counts to `max`. `name` ends in a NUL.
+unsafe fn create_sema(name: &[u8], max: u32) -> SceUid {
+    SceUid(i5(name.as_ptr() as u32, 0, 0, max, 0, __sceKernelCreateSema_stub) as i32)
 }
 
 /// One of the files `locate` opened, once: its handle and length.
@@ -325,7 +340,12 @@ pub unsafe fn serve() -> ! {
         beat += 1;
         if beat % 2 == 0 && CONTROL_FLAG.load(Ordering::Acquire) == 0 {
             let fd = sceIoOpen(b"host0:/maneuver/control.txt\0".as_ptr(), IoOpenFlags::RD_ONLY, 0);
-            if fd.0 >= 0 {
+            if fd.0 < 0 {
+                // No file at launch: the first one written is a change.
+                if last_len == usize::MAX {
+                    last_len = 0;
+                }
+            } else {
                 let mut buf = [0u8; CONTROL_MAX];
                 let n = sceIoRead(fd, buf.as_mut_ptr() as *mut c_void, CONTROL_MAX as u32).max(0) as usize;
                 sceIoClose(fd);

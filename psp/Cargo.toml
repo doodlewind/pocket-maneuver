@@ -29,8 +29,7 @@ panic = "abort"
 
 # The simulation and the shared runtime are optimized for size: the Allegrex has a 16 KB instruction
 # cache, and a tick or a frame runs through far more code than that at opt-level 3. This crate itself
-# stays at 3: built for size, its calls to system functions with more than four arguments pass the
-# fifth one wrong (sceKernelCreateSema answers ILLEGAL_ADDR).
+# stays at 3, as it was measured.
 [profile.release.package.maneuver-sim]
 opt-level = "s"
 [profile.release.package.maneuver-handheld]
