@@ -31,9 +31,9 @@ Measured on an iPod touch 4 (A4, SGX535, iOS 6.1.6), play flown by the autopilot
 
 | Window | Frames | Late frames | Average frame | Worst frame | Most triangles | Most draws |
 | --- | --- | --- | --- | --- | --- | --- |
-| 60 s | 3 564 | 38 (1.1 %) | 16.84 ms | 55.0 ms | 30 961 | 65 |
+| 60 s | 3 570 | 31 (0.9 %) | 16.81 ms | 38.5 ms | 36 549 | 69 |
 
-CPU time per frame: simulation 2.3 ms, the guest's turn 0.8 ms, the interface's redraw 3.2 ms (about 6 ms on every other frame), the scene's commands 2.5 ms. The first half minute, over the town from the wall, is the heaviest stretch: with the governor off it has 3 % of its frames late. Shorter world distances do not change that (the governor's lever does little here); fewer skinned vertices do.
+CPU time per frame: simulation 2.2 ms, the guest's turn 0.6 ms, the interface's redraw 2.5 ms (about 6 ms on a frame that redraws), the scene's commands 2.4 ms. The first half minute, over the town from the wall, is the heaviest stretch: with the governor off it has 3 % of its frames late. Shorter world distances do not change that (the governor's lever does little here); fewer skinned vertices do.
 
 ## Development loop
 

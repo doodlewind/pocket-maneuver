@@ -1,6 +1,6 @@
 # Pocket Maneuver
 
-A traversal game for the PS Vita, the PSP and the Nintendo 3DS: two wire hooks, a tank of compressed gas and a walled town of about 5 400 houses, at **60 frames per second**.
+A traversal game for the PS Vita, the PSP, the Nintendo 3DS and the iPod touch 4: two wire hooks, a tank of compressed gas and a walled town of about 5 400 houses, at **60 frames per second**.
 
 The player fires a wire from each hip into a wall or a roof, is pulled along it, lets go and fires the next. Gas reels a wire in faster, or thrusts when no wire holds. Thirty-two giants, 10 to 16 m tall, stand in the streets and among the trees outside the wall; a giant falls when the player cuts the nape of its neck at speed.
 
@@ -9,13 +9,14 @@ The player fires a wire from each hip into a wall or a roof, is pulled along it,
 | PS Vita | 960 × 544, 4× MSAA, bloom, light shafts, graded composite | GXM, programs compiled on the device | 90 s: 5 420 frames, **0 late**, up to 251 000 triangles |
 | Nintendo 3DS | 400 × 240, town map on the lower screen | PICA200 through citro3d | Old 3DS, 60 s: 3 652 frames, **8 late** (0.2 %), up to 52 600 triangles |
 | PSP | 480 × 272, 16-bit with dither | GE, fixed function | PSP 2000, 60 s: 3 510 frames, **93 late** (2.6 %), up to 22 300 triangles |
+| iPod touch 4 | 480 × 320, played by touch | OpenGL ES 2 on the SGX535 | 60 s: 3 570 frames, **31 late** (0.9 %), up to 36 500 triangles |
 
 The repository holds the whole path from authoring to hardware:
 
 - **`web/`** is the reference: a three.js app that generates the world from one seed at load time and runs the game in a browser.
 - **`crates/maneuver-sim`** is the game: collision, wire physics, camera, procedural animation, sound and the autopilot. The reference runs it as wasm; every device links it natively. There is one implementation of every rule.
 - **`crates/maneuver-cook`** compiles the world for a device profile: it bakes lighting into vertex colours, merges geometry into cells with levels of detail, encodes the atlas and the models in the device's formats and writes one pack with a compile receipt.
-- **`vita/`**, **`psp/`** and **`n3ds/`** draw their pack and run the simulation at one tick per display refresh. **`crates/maneuver-handheld`** is the half of the PSP and 3DS runtimes that does not touch a GPU.
+- **`vita/`**, **`psp/`**, **`n3ds/`** and **`ipod/`** draw their pack and run the simulation at one tick per display refresh. **`crates/maneuver-handheld`** is the half of the PSP, 3DS and iPod runtimes that does not touch a GPU.
 - **`ui/`** is the interface: one PocketJS app, compiled for each device and drawn over the scene by every runtime. **`crates/maneuver-interface`** is the renderer's side of it and the game's flow (title, play, pause, the finished run).
 
 PocketJS (pinned in `vendor/pocketjs`) supplies the device toolchains, the Vita dev host and GXM kernel, the 3DS dev wire and VPK packaging.
@@ -50,7 +51,7 @@ Transcendentals go through `libm`, so wasm, the host, the Vita and the 3DS compu
 | --- | --- | --- | --- |
 | PS Vita | 35 066 triangles | 19 216 – 28 276 | 2 908 – 4 064 |
 | Nintendo 3DS | 6 328 | 2 908 – 4 064 | 1 668 – 2 028 |
-| PSP | 4 528 | 1 668 – 2 028 | 1 038 – 1 148 |
+| PSP, iPod touch 4 | 4 528 | 1 668 – 2 028 | 1 038 – 1 148 |
 
 ## Compile
 
@@ -58,7 +59,7 @@ Transcendentals go through `libm`, so wasm, the host, the Vita and the 3DS compu
 generator (TypeScript)  →  WorldIR  →  maneuver-cook --profile …  →  walled-town.<profile>.pack + .compile.json
 ```
 
-`bun tools/maneuver.ts cook --profile vita60|psp60|n3ds60` exports WorldIR (float geometry, the RGBA atlas, the models, the simulation's world file, scene constants, each file's SHA-256 in a manifest) and runs the compiler. The passes, in order:
+`bun tools/maneuver.ts cook --profile vita60|psp60|n3ds60|ipod60` exports WorldIR (float geometry, the RGBA atlas, the models, the simulation's world file, scene constants, each file's SHA-256 in a manifest) and runs the compiler. The passes, in order:
 
 1. **bake-lighting**: per vertex, `tint × (sun × N·L × visibility + hemisphere(N) × openness)`, with 4 rays toward the sun and 16 cosine-weighted rays for openness, against the collision world. The result is sRGB-encoded at half scale, so the device multiplies by 2.
 2. **merge-cells**: a 64 m cell gets a near mesh (base + detailed buckets) and a middle mesh (base + simple buckets); a far cell gets a far mesh.
@@ -79,9 +80,11 @@ What differs by profile:
 | Extra | | detailed cells in a section read on demand; large triangles in groups with a clip distance each | meshes grouped on shared vertex bases; the town from above |
 | Pack | 30.7 MB | 26.8 MB (17.1 MB read at start) | 27.3 MB |
 
+`ipod60` is the 3DS lowering with every texture as 16-bit texels in row order (what OpenGL ES takes as it is), the PSP's model set, detail distances of 64 m, 150 m and 1 000 m, and no map section: 27.0 MB.
+
 ## The handheld loop
 
-`crates/maneuver-handheld` is what the PSP and the 3DS share: which meshes a frame draws, the cloak, wires and soft discs as vertices, the interface as quads, the status record, and `Game::step` around the simulation.
+`crates/maneuver-handheld` is what the PSP, the 3DS and the iPod touch share: which meshes a frame draws, the cloak, wires and soft discs as vertices, the interface as quads, the status record, and `Game::step` around the simulation.
 
 **Hidden giants** are not drawn. Each frame one giant beyond the near distance is tested against the town with three rays from the eye (head, chest, hip); a giant whose three are blocked stays undrawn until a later test sees it. In the town most of the giants in the frustum are behind houses.
 
@@ -102,7 +105,7 @@ A presentation decides where things go and how large they are. What the gas gaug
 - **The split**: the renderer owns the simulation, the scene and the marks anchored to the world (where each wire would bite, the nearest target with its distance, the streaks of speed), which it batches itself from the pack's font. The interface owns the gauges, the lists, the map and, on a touch panel, the controls.
 - **The protocol** (`ui/app/protocol.ts`, `crates/maneuver-interface`) is JSON lines over PocketJS's `pocket.overlay` service, answered in the process: the QuickJS API on the Vita and the PSP, the `svcwire` symbols of PocketJS's C hosts on the 3DS. The renderer sends the members of its state that changed since the last line; the interface sends `start`, `pause`, `restart`, `title`, `option`, `prefs`, and from a touch panel `drive` (the stick and the held keys) and `look` (pixels a finger dragged).
 - **The flow** is `maneuver_interface::Session`, one implementation for every device: behind the title the autopilot flies the route; play takes the pad; a pause runs no tick and plays no sound; a finished run shows its time against the best one. With no guest on the screen (its files are missing, or it threw) START and SELECT keep the flow as before.
-- **The numbers in flight** (speed, gas, the clock, the player on the map, the wires that hold) travel as one array, `t`, refreshed 10 times a second on the PSP, 15 on the 3DS, 30 on the Vita. Each is written straight to its node (`@pocketjs/framework/hot`) in a cell of fixed size with the text at its left: one native call and no layout. A value set through a Solid signal costs milliseconds per update on the PSP.
+- **The numbers in flight** (speed, gas, the clock, the player on the map, the wires that hold) travel as one array, `t`, refreshed 10 times a second on the PSP, 15 on the 3DS and the iPod touch, 30 on the Vita. Each is written straight to its node (`@pocketjs/framework/hot`) in a cell of fixed size with the text at its left: one native call and no layout. A value set through a Solid signal costs milliseconds per update on the PSP.
 - **The guest is offered a turn 30 times a second** (two UI-core ticks per turn) and takes it when it is worth its cost (`maneuver_interface::Pace`). A turn runs the whole framework's frame, 4 to 6 ms on a PSP however little changed. The interface says when it has nothing scheduled (`idle`: no note standing, no hint fading); from then a turn is taken when the renderer has news, when a button the interface listens to changes (in play, START alone), while a finger is down, and for a few turns after any of those. Buttons pressed between two turns are latched, so a press shorter than a turn still arrives.
 - **Screens stay built.** The title, the gauges and the pause list are built while the world loads and then shown or hidden: a screen takes tenths of a second to build on the PSP, which the loading screen can spend and the moment play resumes cannot.
 - **The map** is the town from above, drawn by the world compiler from the collision triangles (`maneuver-cook --map`) and compiled into the app as an image; `tools/ui.ts` regenerates it when the exported world changes. Each giant is a mark that dims when it is cut; the player's mark moves and turns with `t`. The 3DS shows it on the lower screen during play; the other devices show it beside the pause list.
@@ -185,6 +188,22 @@ Measured on an Old 3DS (268 MHz), autopilot flying the route (`bun tools/n3ds.ts
 
 CPU time per frame: simulation, sound and mesh selection 2–4 ms, commands and moving geometry 2.4–3.0 ms. Before the ray work in the simulation (see above) a 90 s run had 69 late frames: the ticks that search for an anchor.
 
+## On the iPod touch 4
+
+`ipod/` is a C shell and OpenGL ES 2 renderer over the 3DS's Rust core, built from the same source for `armv7-apple-ios`. The device has no pad: the game is played through the interface's touch presentation, whose stick, keys and drags reach the simulation as `drive` and `look` commands. `ipod/README.md` has the frame, the limits and the loop.
+
+- **The scene** is the 3DS's passes with a leaner skin shader: the two bones' rows are blended before one transform, a giant beyond the near distance takes one bone, and the light is three precomputed terms. On the SGX535 a skinned vertex cost about four times a world vertex, and the frame follows the vertices submitted.
+- **The interface** is PocketJS's UI core with its OpenGL ES 2 backend and the portable QuickJS guest driver. The guest turns every frame (0.6 ms here); what it shows is drawn into a texture when it changed, on every other frame at most, and that texture is laid over the scene.
+- **Sound** leaves through an audio queue fed from the synthesizer at 22.05 kHz.
+
+Measured on an iPod touch 4 (A4, iOS 6.1.6), play flown by the autopilot (`bun tools/ipod.ts bench --seconds 60`):
+
+| Window | Frames | Late frames | Average frame | Worst frame | Most triangles | Most draws |
+| --- | --- | --- | --- | --- | --- | --- |
+| 60 s | 3 570 | 31 (0.9 %) | 16.81 ms | 38.5 ms | 36 549 | 69 |
+
+CPU time per frame: simulation 2.2 ms, the guest's turn 0.6 ms, the interface's redraw 2.5 ms (about 6 ms on a frame that redraws), the scene's commands 2.4 ms.
+
 ## Controls
 
 | | Vita | PSP | 3DS | Keyboard |
@@ -199,7 +218,7 @@ CPU time per frame: simulation, sound and mesh selection 2–4 ms, commands and 
 | Pause | START | START | START, or the key on the lower screen | |
 | Lists: move, choose, back | direction pad, ○, ✕ (or a tap) | direction pad, ○, ✕ | +Control Pad, A, B (or a tap) | |
 
-The pause list restarts the run and returns to the title; the web reference keeps `?auto` and Backspace.
+The pause list restarts the run and returns to the title; the web reference keeps `?auto` and Backspace. On the iPod touch every control is drawn on the panel: a stick to move, round keys for the wires (a short tap keeps one, the next lets go), the gas, the cut, the aimed pair and the dive, and a finger on the scene to turn the view.
 
 ## Commands
 
@@ -227,6 +246,10 @@ bun tools/psp.ts emu --frames 240 [--ctl "…"] [--out f.png] [--standalone]   #
 bun tools/n3ds.ts build | install | status | capture | bench --seconds 90
 bun tools/n3ds.ts ctl "auto=0 stats=1"
 
+# iPod touch 4 (over SSH; PocketJS's pinned iOS 6 toolchain)
+bun tools/ipod.ts cook | deploy | native [--pack] | launch | status | capture --out f.png | bench --seconds 60
+bun tools/ipod.ts ctl "mode=play auto=1"
+
 # The interface
 bun tools/ui.ts psp|vita|3ds|ipod      # compile ui/ for one device → .pocket-build/ui/<device>/
 bun tools/ui.ts preview [device…]      # every screen as a picture → .pocket-build/ui/preview/
@@ -240,7 +263,7 @@ Vita `ctl` keys: `mode`, `auto`, `ui`, `press`, `reset`, `view {pos, target, fov
 
 On every device `mode=title|play|paused|results` sets the game's flow (`mode=play auto=1` is play flown by the autopilot: what `bench` measures), `ui=start|pause|resume|restart|title` asks what the interface would ask, and `press=<mask>` presses PocketJS buttons on the guest.
 
-Toolchains: VitaSDK and `cargo-vita`; rust-psp's `cargo psp` (PocketJS's pinned SDK); devkitARM in PocketJS's pinned container for the 3DS C code, and `armv6k-nintendo-3ds` with `build-std` for its Rust core.
+Toolchains: VitaSDK and `cargo-vita`; rust-psp's `cargo psp` (PocketJS's pinned SDK); devkitARM in PocketJS's pinned container for the 3DS C code, and `armv6k-nintendo-3ds` with `build-std` for its Rust core; PocketJS's pinned iOS 6 sysroot with Xcode's clang and `ld-classic` for the iPod touch, and `armv7-apple-ios` with `build-std` for its core.
 
 ## Layout
 
@@ -251,20 +274,21 @@ Toolchains: VitaSDK and `cargo-vita`; rust-psp's `cargo psp` (PocketJS's pinned 
 | `web/scripts/export-world.ts` | WorldIR export |
 | `crates/maneuver-sim` | simulation core, wasm interface, snapshot layout, harness |
 | `crates/maneuver-pack` | pack container, mesh tables and vertex layouts |
-| `crates/maneuver-cook` | world compiler; `handheld.rs` lowers for the PSP and the 3DS |
+| `crates/maneuver-cook` | world compiler; `handheld.rs` lowers for the PSP, the 3DS and the iPod touch |
 | `crates/maneuver-handheld` | mesh selection, moving geometry, the marks on the world, the loop around the simulation, guard-band clipping |
 | `crates/maneuver-interface` | the interface's protocol, the game's flow (`Session`), the in-process channel for a PocketJS guest |
 | `ui/` | the interface: `pocket.json` (presentations), `app/` (protocol, state, shared parts, one presentation per device shape), `test/` (mock renderer, previews, flow test) |
 | `vita/` | Vita app and its Cg programs; LiveArea art under `vita/assets` |
 | `psp/` | PSP program: GE renderer, cell reader, exact-size memory, the interface's guest, sound |
 | `n3ds/` | 3DS program: C host and renderer, PICA shaders, the Rust core |
+| `ipod/` | iPod touch program: C shell and OpenGL ES 2 renderer; `core/` builds the 3DS core's source for the device |
 | `profiles/` | compile profiles |
-| `tools/` | `maneuver.ts`, `vita.ts`, `psp.ts`, `n3ds.ts`, `ui.ts`, `bench.ts`, `shot.ts` |
+| `tools/` | `maneuver.ts`, `vita.ts`, `psp.ts`, `n3ds.ts`, `ipod.ts`, `ui.ts`, `bench.ts`, `shot.ts` |
 
 ## Not done
 
 - The interface is measured on the PSP. On the 3DS it has run in Azahar and on the Vita it only builds: its cost per frame there, and touch on both, are not measured yet.
-- The touch presentation runs in the preview rig and passes its flow test; no iPod touch runtime draws the game under it yet.
+- The iPod touch's controls have been driven by remote touches, not by thumbs: where the stick and the keys sit, and how the latching wires feel, are untested by a person. Its sound has not been heard.
 - The PSP misses about one frame in forty on the autopilot's route, in the densest streets.
 - The 3DS's CSND sound path and the PSP's sound have not been heard by a person; the Vita's sound has been checked for level, not by ear.
 - The numbers come from the autopilot. Wire pull, gas economy, reach and camera rates are set from simulated runs and have not been tuned by hand on a console.
