@@ -214,12 +214,8 @@ pub enum Command {
     Drive { mx: f32, my: f32, lx: f32, ly: f32, buttons: u32 },
     /// A finger turning the view, logical pixels since the last one.
     Look { dx: f32, dy: f32 },
-    /// The interface has the pad (a sheet is open): play takes no input from it.
-    Hold(bool),
     /// To store, and to hand back in [`State::prefs`].
     Prefs(String),
-    /// The interface shows nothing just now.
-    Quiet(bool),
 }
 
 /// The value after `"key":` in a flat JSON object. Quoted text is skipped
@@ -310,9 +306,7 @@ impl Command {
             "option" => Command::Option { key: text(line, "key")?, value: n("value").max(0.0) as u32 },
             "drive" => Command::Drive { mx: n("mx") / 100.0, my: n("my") / 100.0, lx: n("lx") / 100.0, ly: n("ly") / 100.0, buttons: n("b").max(0.0) as u32 },
             "look" => Command::Look { dx: n("dx"), dy: n("dy") },
-            "hold" => Command::Hold(flag(line, "on")),
             "prefs" => Command::Prefs(text(line, "value")?),
-            "quiet" => Command::Quiet(flag(line, "on")),
             _ => return None,
         })
     }
@@ -400,9 +394,7 @@ mod tests {
         assert_eq!(parse(r#"{"type":"option","key":"bloom","value":0}"#), Command::Option { key: "bloom".into(), value: 0 });
         assert_eq!(parse(r#"{"type":"drive","mx":0,"my":72,"lx":-100,"ly":0,"b":5}"#), Command::Drive { mx: 0.0, my: 0.72, lx: -1.0, ly: 0.0, buttons: 5 });
         assert_eq!(parse(r#"{"type":"look","dx":-3.5,"dy":12}"#), Command::Look { dx: -3.5, dy: 12.0 });
-        assert_eq!(parse(r#"{"type":"hold","on":false}"#), Command::Hold(false));
         assert_eq!(parse(r#"{"type":"prefs","value":"{\"best\":812}"}"#), Command::Prefs(r#"{"best":812}"#.into()));
-        assert_eq!(parse(r#"{"type":"quiet","on":true}"#), Command::Quiet(true));
         assert_eq!(Command::parse(r#"{"type":"pocket.overlay.control","name":"x","node":3}"#), None);
         // A value that looks like a key is not one.
         assert_eq!(parse(r#"{"type":"prefs","value":"\"type\":\"title\""}"#), Command::Prefs(r#""type":"title""#.into()));

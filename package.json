@@ -4,12 +4,13 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "setup": "git submodule update --init && bun install && bun install --cwd web",
+    "setup": "git submodule update --init && bun install && bun install --cwd web && bun install --cwd vendor/pocketjs",
     "maneuver": "bun tools/maneuver.ts",
     "sim": "bun tools/maneuver.ts sim",
     "dev": "bun tools/maneuver.ts sim && bun run --cwd web dev",
-    "typecheck": "bunx tsc --noEmit -p web",
-    "test": "cargo test --workspace"
+    "ui": "bun tools/ui.ts",
+    "typecheck": "bunx tsc --noEmit -p web && bunx tsc --noEmit -p ui",
+    "test": "cargo test --workspace && bun tools/ui.ts test"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

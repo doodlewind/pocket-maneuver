@@ -53,10 +53,6 @@ pub struct Session {
     pub mode: Mode,
     /// The autopilot plays: always behind the title, and in play when a measurement asks for it.
     pub auto: bool,
-    /// The interface has the pad: play takes no input from it.
-    pub hold: bool,
-    /// The interface shows nothing just now.
-    pub quiet: bool,
     /// Pushing the camera stick up looks down.
     pub invert: bool,
     note: String,
@@ -77,7 +73,7 @@ impl Default for Session {
 
 impl Session {
     pub fn new() -> Session {
-        Session { mode: Mode::Title, auto: true, hold: false, quiet: false, invert: false, note: String::new(), note_id: 0, drive: Pad::default(), look: (0.0, 0.0), prev_buttons: u32::MAX, frames: 0 }
+        Session { mode: Mode::Title, auto: true, invert: false, note: String::new(), note_id: 0, drive: Pad::default(), look: (0.0, 0.0), prev_buttons: u32::MAX, frames: 0 }
     }
 
     /// A line for the middle of the screen.
@@ -128,8 +124,6 @@ impl Session {
                 self.look.0 = clamp(self.look.0 + dx * LOOK, -1.5, 1.5);
                 self.look.1 = clamp(self.look.1 - dy * LOOK, -1.0, 1.0);
             }
-            Command::Hold(on) => self.hold = on,
-            Command::Quiet(on) => self.quiet = on,
             other => return Some(other),
         }
         None
@@ -142,7 +136,7 @@ impl Session {
 
     /// The simulation's input for one tick of play.
     fn input(&mut self, pad: &Pad) -> Input {
-        if self.hold || self.mode != Mode::Play {
+        if self.mode != Mode::Play {
             return Input::default();
         }
         let d = self.drive;
@@ -241,6 +235,10 @@ impl Session {
         if self.mode == Mode::Results {
             state.result = [sim.run.ticks / 6, libm::roundf(sim.run.max_speed * 3.6) as u32];
         }
+        // The numbers in flight show in play; behind the title they would cost the guest a line a turn.
+        if self.mode != Mode::Play {
+            return;
+        }
         let p = &sim.p;
         let heading = libm::roundf(-sim.cam.yaw * (180.0 / PI)) as i32;
         state.t = Telemetry {
@@ -307,12 +305,12 @@ mod tests {
         }
         let turned = wrap_angle(yaw - sim.cam.yaw);
         assert!((turned - 100.0 * LOOK).abs() < 0.02, "turned {turned}");
-        // The drawn stick and buttons reach the simulation; a sheet over the game stops them.
+        // The drawn stick and buttons reach the simulation; a paused game takes none.
         session.command(&mut sim, Command::Drive { mx: 0.0, my: 1.0, lx: 0.0, ly: 0.0, buttons: btn::GAS });
         let input = session.input(&Pad::default());
         assert_eq!(input.buttons, btn::GAS);
         assert!(input.ly > 0.99);
-        session.command(&mut sim, Command::Hold(true));
+        session.command(&mut sim, Command::Pause(true));
         assert_eq!(session.input(&Pad::default()).buttons, 0);
     }
 

@@ -128,6 +128,8 @@ if (import.meta.main) {
   const [command, ...rest] = process.argv.slice(2);
   if (command === "prepare") await prepareInterface();
   else if (command === "preview" || command === "test") {
+    // Both run the bundle on PocketJS's UI core built for wasm.
+    if (!existsSync(join(pocket, "hosts/web/pocketjs.wasm"))) run(["bun", "tools/wasm.ts"]);
     // One process per device: a bundle owns `globalThis.frame`.
     for (const device of rest.length ? (rest as Device[]) : DEVICES) {
       await compileInterface(device);

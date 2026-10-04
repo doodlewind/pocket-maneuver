@@ -1,5 +1,5 @@
 // The renderer's state as signals, and the way to command it.
-import { createSignal, type Accessor } from "solid-js";
+import { batch, createSignal, type Accessor } from "solid-js";
 import { connectOverlay } from "@pocketjs/framework/overlay-host";
 import type { Command, HostState } from "./protocol.ts";
 
@@ -24,17 +24,25 @@ export interface Host extends Signals {
   ready: Accessor<boolean>;
   /** The numbers in flight as they last arrived (`T` indexes them). */
   t: number[];
-  /** Calls `listener` in the turn new numbers arrive. They change up to 30
-   *  times a second, so a listener writes straight to its nodes
-   *  (`@pocketjs/framework/hot`) instead of through a signal. */
-  onNumbers(listener: (t: number[]) => void): void;
+  /** Calls `listener` now and in every turn new numbers arrive; returns how
+   *  to stop. They change up to 30 times a second, so a listener writes
+   *  straight to its nodes (`@pocketjs/framework/hot`), not to a signal. */
+  onNumbers(listener: (t: number[]) => void): () => void;
 }
 
 export function connectHost(): Host {
   const [ready, setReady] = createSignal(false);
   const set = {} as { [K in keyof Slow]: (value: Slow[K]) => void };
-  const listeners: ((t: number[]) => void)[] = [];
-  const host = { ready, t: [0, 100, 0, 0, 0, 0, 0], onNumbers: (listener) => void listeners.push(listener) } as Host;
+  const listeners = new Set<(t: number[]) => void>();
+  const host = {
+    ready,
+    t: [0, 100, 0, 0, 0, 0, 0],
+    onNumbers(listener) {
+      listeners.add(listener);
+      listener(host.t);
+      return () => void listeners.delete(listener);
+    },
+  } as Host;
   const last = { ...initial };
   for (const key of Object.keys(initial) as (keyof Slow)[]) {
     const [get, put] = createSignal<unknown>(initial[key], { equals: false });
@@ -42,16 +50,24 @@ export function connectHost(): Host {
     (set as unknown as Record<string, unknown>)[key] = put;
   }
   const overlay = connectOverlay<Partial<HostState>, Command>((state) => {
-    for (const key of Object.keys(state) as (keyof HostState)[]) {
-      if (key === "t") {
-        host.t = state.t!;
-        for (const listener of listeners) listener(host.t);
-      } else if (key in initial && !same(last[key], state[key])) {
-        (last as Record<string, unknown>)[key] = state[key];
-        (set[key] as (value: unknown) => void)(state[key]);
-      }
+    // One line is one moment: what reads two members sees both changed.
+    let slow = false;
+    for (const key in state) {
+      if (key === "t") host.t = state.t!;
+      else slow = true;
     }
-    setReady(true);
+    // In flight a line holds the numbers alone: no signal is written.
+    if (slow || !ready()) {
+      batch(() => {
+        for (const key of Object.keys(state) as (keyof HostState)[]) {
+          if (key === "t" || !(key in initial) || same(last[key], state[key])) continue;
+          (last as Record<string, unknown>)[key] = state[key];
+          (set[key] as (value: unknown) => void)(state[key]);
+        }
+        setReady(true);
+      });
+    }
+    if (state.t) for (const listener of listeners) listener(host.t);
   });
   host.send = overlay.send;
   return host;

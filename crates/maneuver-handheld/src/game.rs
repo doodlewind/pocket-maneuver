@@ -11,6 +11,7 @@ use core::fmt::Write;
 use maneuver_interface::{channel, Command, Mode, Session, Setting};
 use maneuver_sim::audio::Synth;
 use maneuver_sim::math::*;
+use maneuver_sim::sim::tune;
 use maneuver_sim::Sim;
 
 use maneuver_sim::pose::BONES;
@@ -127,6 +128,8 @@ impl Game {
         let set = Settings { hud: true, sound: true, stats: false, world: true, actors: true, lod_near: scene.h.lod_near, lod_mid: scene.h.lod_mid, lod_far: scene.h.lod_far, repeat: 1, view: None, option: 0, govern: true };
         let skins = (0..sim.dummies.len()).map(|i| (sim.titan_skin(i), 0)).collect();
         let mut game = Game { sim, synth: Synth::new(), scene, actors, set, session: Session::new(), prefs: None, frame: 0, lod_scale: 1.0, window: (0, 0, 0), skins };
+        // The loading steps are over.
+        unsafe { channel() }.state.message.clear();
         game.publish();
         game
     }
@@ -341,7 +344,13 @@ impl Game {
     /// streaks of speed and the nearest target. Everything else on the screen is the interface's.
     pub fn draw_marks(&self, h: &mut Hud, vp: &Mat4) {
         let sim = &self.sim;
-        if !self.set.hud || self.set.view.is_some() || self.session.mode != Mode::Play {
+        if !self.set.hud {
+            return;
+        }
+        if !unsafe { channel() }.is_open() {
+            self.draw_gauges(h);
+        }
+        if self.set.view.is_some() || self.session.mode != Mode::Play {
             return;
         }
         let (w, ht) = (self.scene.h.screen[0], self.scene.h.screen[1]);
@@ -407,6 +416,40 @@ impl Game {
         }
     }
 
+    /// The run in numbers, from the pack's font, for a machine with no interface on the screen (a
+    /// PSP-1000 has no memory left for its guest): gas, speed, targets and the clock, and what START
+    /// and SELECT do.
+    fn draw_gauges(&self, h: &mut Hud) {
+        let sim = &self.sim;
+        let (w, ht) = (self.scene.h.screen[0], self.scene.h.screen[1]);
+        let (sx, sy) = (w / 960.0, ht / 544.0);
+        let sizes = &h.font.sizes;
+        let (small, medium, large) = (sizes[0], sizes[sizes.len() / 2], sizes[sizes.len() - 1]);
+        let white = rgba(244, 241, 232, 255);
+        let dim = rgba(244, 241, 232, 190);
+        let gas = sim.p.gas / tune::GAS_MAX;
+        let (gx, gy, gw, gh) = (libm::roundf(30.0 * sx), libm::roundf(492.0 * sy), libm::roundf(224.0 * sx), max(libm::roundf(14.0 * sy), 6.0));
+        h.text(small, gx, gy - 4.0, 0.0, dim, "GAS");
+        h.rect(gx, gy, gw, gh, rgba(10, 14, 20, 140));
+        h.frame(gx, gy, gw, gh, 1.0, rgba(255, 255, 255, 130));
+        let fill = if gas < 0.2 { rgba(255, 122, 60, 255) } else { rgba(233, 240, 244, 255) };
+        h.rect(gx + 2.0, gy + 2.0, (gw - 4.0) * gas, gh - 4.0, fill);
+        h.text(large, 866.0 * sx, 510.0 * sy, 1.0, white, &format!("{}", F0(sim.speed() * 3.6)));
+        h.text(small, 874.0 * sx, 510.0 * sy, 0.0, dim, "km/h");
+        h.text(medium, 930.0 * sx, 44.0 * sy, 1.0, white, &format!("{} / {}", sim.run.kills, sim.dummies.len()));
+        let tenths = sim.run.ticks / 6;
+        let (m, sec, d) = (tenths / 600, tenths / 10 % 60, tenths % 10);
+        h.text(small, 930.0 * sx, 44.0 * sy + small as f32 + 3.0, 1.0, dim, &format!("{}:{}{}.{}", m, if sec < 10 { "0" } else { "" }, sec, d));
+        let line = if sim.run.done {
+            "EVERY TARGET CUT  -  SELECT starts again"
+        } else if self.session.auto {
+            "AUTOPILOT  -  press a button to take over"
+        } else {
+            return;
+        };
+        h.text(small, w * 0.5, ht - 8.0, 0.5, dim, line);
+    }
+
     /// The status record as JSON. `extra` is the device's own members, without braces (may be empty).
     pub fn status(&self, out: &mut String, target: &str, perf: &Perf, extra: &str) {
         let s = &self.sim;
@@ -417,7 +460,7 @@ impl Game {
         );
         let _ = write!(
             out,
-            "\"mode\":\"{}\",\"interface\":{},\"settings\":{{\"auto\":{},\"hud\":{},\"stats\":{},\"world\":{},\"actors\":{},\"lodNear\":{:.1},\"lodMid\":{:.1},\"lodFar\":{:.1},\"repeat\":{},\"option\":{},\"fixedView\":{},\"govern\":{},\"lodScale\":{:.3}}},",
+            "\"mode\":\"{}\",\"interfaceOpen\":{},\"settings\":{{\"auto\":{},\"hud\":{},\"stats\":{},\"world\":{},\"actors\":{},\"lodNear\":{:.1},\"lodMid\":{:.1},\"lodFar\":{:.1},\"repeat\":{},\"option\":{},\"fixedView\":{},\"govern\":{},\"lodScale\":{:.3}}},",
             self.session.mode.name(), unsafe { channel() }.is_open(), self.session.auto, self.set.hud, self.set.stats, self.set.world, self.set.actors, self.set.lod_near, self.set.lod_mid, self.set.lod_far, self.set.repeat, self.set.option, self.set.view.is_some(), self.set.govern, self.lod_scale
         );
         let _ = write!(

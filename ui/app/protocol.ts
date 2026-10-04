@@ -79,9 +79,4 @@ export type Command =
   | { type: "drive"; mx: number; my: number; lx: number; ly: number; b: number }
   /** A finger turning the view: logical px since the last command. */
   | { type: "look"; dx: number; dy: number }
-  /** The interface has the pad (a sheet is open): play takes no input from it. */
-  | { type: "hold"; on: boolean }
-  | { type: "prefs"; value: string }
-  /** The interface shows nothing just now: a renderer that lays it over the
-   *  frame as a texture may skip that. */
-  | { type: "quiet"; on: boolean };
+  | { type: "prefs"; value: string };
