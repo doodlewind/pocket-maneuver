@@ -21,7 +21,6 @@ import { $ } from "bun";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { withDeviceLease } from "../vendor/pocketjs/tools/device-lease.ts";
-import { resolvePspBuildToolchain } from "../vendor/pocketjs/tools/psp-toolchain.ts";
 import { encodePng } from "./png.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -46,7 +45,9 @@ const share = resolve(opt("--share", process.env.MANEUVER_PSP_SHARE ?? (await ru
 const app = `${share}/maneuver`;
 
 async function build() {
-  const tc = resolvePspBuildToolchain();
+  // Loaded by path at run time: PocketJS's toolchain module resolves its manifest through its own tsconfig.
+  const toolchain: string = `${ROOT}/vendor/pocketjs/tools/psp-toolchain.ts`;
+  const tc = (await import(toolchain)).resolvePspBuildToolchain();
   await $`${tc.rustup} run ${tc.manifest.rust.toolchain} cargo psp --release`.cwd(`${ROOT}/psp`).env({
     ...tc.environment,
     RUST_PSP_ABORT_ONLY: "1",

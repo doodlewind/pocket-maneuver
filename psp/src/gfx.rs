@@ -119,6 +119,8 @@ pub struct Gfx {
     pub stats: Stats,
     /// Meshes chosen by level this frame.
     pub picked: maneuver_handheld::world::Stats,
+    /// Leaves every triangle to the GE (`option=4`), to see what its guard band drops.
+    no_clip: bool,
     pub resident_bytes: usize,
 }
 
@@ -263,6 +265,7 @@ impl Gfx {
             giants: Vec::with_capacity(32),
             stats: Stats::default(),
             picked: Default::default(),
+            no_clip: false,
             resident_bytes,
         })
     }
@@ -290,7 +293,7 @@ impl Gfx {
         let nbig = ((rec.idx_count - rec.big_first) / 3) as usize;
         let mut tested = 0;
         let mut d = 0.0;
-        if nbig > 0 {
+        if nbig > 0 && !self.no_clip {
             d = mat::box_distance(eye, &rec.min, &rec.max);
             if d < rec.clip_radius {
                 // The bytes are sorted, largest first: the triangles that could reach the guard band are a prefix.
@@ -452,6 +455,7 @@ impl Gfx {
     /// Builds and submits the frame's display list. The GE draws it while the caller prepares the next frame.
     pub unsafe fn frame(&mut self, game: &mut Game, world: &World, ticks: u32, perf: &maneuver_handheld::game::Perf) {
         self.stats = Stats::default();
+        self.no_clip = game.set.option & 4 != 0;
         let cam = game.camera();
         let scene_h = game.scene.h;
         let (lod_near, lod_mid, lod_far) = (game.set.lod_near, game.set.lod_mid, game.set.lod_far);

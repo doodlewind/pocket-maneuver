@@ -223,7 +223,7 @@ function rowHouses(w: World, rng: Rng, f: Frame, from: number, to: number, depth
   const flush = (end: number) => {
     if (run.length > 0) {
       const mean = (g: (h: House) => number) => run.reduce((n, h) => n + g(h) * h.w, 0) / run.reduce((n, h) => n + h.w, 0);
-      const tint = (g: (h: House) => Rgb): Rgb => [0, 1, 2].map((c) => mean((h) => g(h)[c])) as Rgb;
+      const tint = (g: (h: House) => Rgb): Rgb => [mean((h) => g(h)[0]), mean((h) => g(h)[1]), mean((h) => g(h)[2])];
       emitRowMass(w, { o: at(f, runFrom, 0, 0), r: f.r, n: f.n }, end - runFrom, mean((h) => h.d), mean((h) => h.storeys), mean((h) => h.rise) * 0.8, tint((h) => h.plaster), tint((h) => h.roof), run[0].seed);
     }
     run = [];

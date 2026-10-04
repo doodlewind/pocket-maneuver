@@ -20,7 +20,6 @@ import { join, resolve } from "node:path";
 import { pocketRuntimeDeviceId } from "../vendor/pocketjs/contracts/spec/pocket-runtime-wire.ts";
 import { withDeviceLease } from "../vendor/pocketjs/tools/device-lease.ts";
 import { THREE_DS_DEV_HOST_ABI, THREE_DS_DEV_TARGET_ID } from "../vendor/pocketjs/tools/3ds-profile.ts";
-import { discoverPocketRuntimes, parsePocketRuntimeToken, PocketRuntimeClient } from "../vendor/pocketjs/tools/3ds-runtime-client.ts";
 import { runContainer } from "../vendor/pocketjs/tools/3ds-toolchain.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -37,6 +36,11 @@ const opt = (key: string, fallback: string) => {
   return at < 0 ? fallback : (argv[at + 1] ?? fallback);
 };
 const host = opt("--host", process.env.POCKET_3DS_HOST ?? "192.168.8.159");
+
+// Loaded by path at run time: PocketJS's client module is checked by PocketJS's own compiler settings.
+const clientModule: string = join(POCKETJS, "tools/3ds-runtime-client.ts");
+const { discoverPocketRuntimes, parsePocketRuntimeToken, PocketRuntimeClient } = await import(clientModule);
+type Client = any;
 
 const sha = (path: string) => new Bun.CryptoHasher("sha256").update(readFileSync(path)).digest("hex");
 
@@ -80,9 +84,9 @@ cp /tmp/build/maneuver.elf /tmp/build/maneuver.map /maneuver/.pocket-build/3ds/b
   return receipt;
 }
 
-async function connect(): Promise<PocketRuntimeClient> {
+async function connect(): Promise<Client> {
   const keys = opt("--keys", join(POCKETJS, ".pocket/3ds/devices"));
-  let devices = await discoverPocketRuntimes({ addresses: [host] });
+  let devices: any[] = await discoverPocketRuntimes({ addresses: [host] });
   for (let attempt = 0; attempt < 3 && !devices.some((d) => d.address === host); attempt++) {
     await Bun.sleep(400);
     devices = await discoverPocketRuntimes({ addresses: [host] });
@@ -108,17 +112,17 @@ async function connect(): Promise<PocketRuntimeClient> {
   }
 }
 
-async function status(c: PocketRuntimeClient, text = ""): Promise<any> {
+async function status(c: Client, text = ""): Promise<any> {
   const reply = c.waitForCtrl((m: any) => m.t === "maneuver.status", 8000);
   await c.sendCtrl({ t: "maneuver.control", ...(text ? { text } : {}) });
   return await reply;
 }
 
 /** Connects, retrying: right after another client leaves, the first connect can time out. */
-async function session<T>(f: (c: PocketRuntimeClient) => Promise<T>): Promise<T> {
+async function session<T>(f: (c: Client) => Promise<T>): Promise<T> {
   let last: unknown;
   for (let attempt = 0; attempt < 4; attempt++) {
-    let c: PocketRuntimeClient | undefined;
+    let c: Client | undefined;
     try {
       c = await connect();
       return await f(c);
