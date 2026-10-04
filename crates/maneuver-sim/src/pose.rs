@@ -540,6 +540,9 @@ pub struct PoseIn {
 pub struct Pose {
     skeleton: Skeleton,
     bind_inv: [M34; BONES],
+    /// The key poses that do not change, built once: slide, air, fly, hang, reel, thrust.
+    /// Each is some fifteen rotations from Euler angles, six sines and cosines apiece.
+    fixed: [Rot; 6],
     weights: [f32; POSES],
     root: Quat,
     tilt: V3,
@@ -577,6 +580,7 @@ impl Pose {
         Pose {
             bind_inv: skeleton.bind_inverse(),
             skeleton,
+            fixed: [slide(), air(), fly(), hang(), reel(), thrust()],
             weights: w,
             root: Quat::ID,
             tilt: V3::UP,
@@ -653,8 +657,9 @@ impl Pose {
         }
         let w = self.weights.map(|x| x / sum.max(1e-4));
         let amp = saturate(hs / tune::RUN_SPEED);
-        let keys = [stand(t), run(i.run_phase, amp), slide(), air(), fly(), hang(), reel(), thrust()];
-        let mut rot = blend(&[(&keys[0], w[0]), (&keys[1], w[1]), (&keys[2], w[2]), (&keys[3], w[3]), (&keys[4], w[4]), (&keys[5], w[5]), (&keys[6], w[6]), (&keys[7], w[7])]);
+        let (standing, running) = (stand(t), run(i.run_phase, amp));
+        let f = &self.fixed;
+        let mut rot = blend(&[(&standing, w[0]), (&running, w[1]), (&f[0], w[2]), (&f[1], w[3]), (&f[2], w[4]), (&f[3], w[5]), (&f[4], w[6]), (&f[5], w[7])]);
 
         // Root: facing, then a forward lean by pose, then a tilt of the whole body toward the wires it hangs from.
         let climb = if speed > 1.0 { i.vel.y / speed } else { 0.0 };
