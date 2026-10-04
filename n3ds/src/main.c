@@ -389,8 +389,8 @@ static bool new3ds;
 static void report_status(void) {
   static char body[3072], extra[512], line[3200];
   int n = snprintf(extra, sizeof extra,
-                   "\"build\":\"" MANEUVER_BUILD_ID "\",\"phase\":\"%s\",\"error\":\"%s\",\"packBytes\":%lu,\"linearFree\":%lu,\"vramFree\":%lu,\"cpuMsTotal\":%.3f,\"gpuWaitMs\":%.3f,\"sound\":%s,\"soundResult\":\"%08lx\",\"new3ds\":%s",
-                   stage, app_error, (unsigned long)pack_bytes, (unsigned long)linearSpaceFree(), (unsigned long)vramSpaceFree(), cpu_ms, wait_ms, sound ? "\"ndsp\"" : csnd_on ? "\"csnd\"" : "false", (unsigned long)sound_result, new3ds ? "true" : "false");
+                   "\"build\":\"" MANEUVER_BUILD_ID "\",\"phase\":\"%s\",\"error\":\"%s\",\"packBytes\":%lu,\"linearFree\":%lu,\"vramFree\":%lu,\"cpuMsTotal\":%.3f,\"gpuWaitMs\":%.3f,\"sound\":%s,\"soundResult\":\"%08lx\",\"new3ds\":%s,\"uniforms\":[%d,%d,%d,%d]",
+                   stage, app_error, (unsigned long)pack_bytes, (unsigned long)linearSpaceFree(), (unsigned long)vramSpaceFree(), cpu_ms, wait_ms, sound ? "\"ndsp\"" : csnd_on ? "\"csnd\"" : "false", (unsigned long)sound_result, new3ds ? "true" : "false", render_debug[0], render_debug[1], render_debug[2], render_debug[3]);
   if (!strcmp(stage, "running")) {
     mh_status(body, sizeof body, &perf, extra, n);
     /* {"target":... becomes {"t":"maneuver.status","target":... */
@@ -515,7 +515,8 @@ int main(void) {
     /* The map takes the left 240 pixels of the lower screen; text keeps the ten columns beside it. */
     if (map_block) {
       consoleInit(GFX_BOTTOM, &side);
-      consoleSetWindow(&side, 30, 0, 10, 30);
+      /* Window coordinates count from 1. */
+      consoleSetWindow(&side, 31, 1, 10, 30);
     }
   } else {
     stage = "load-error";

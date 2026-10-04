@@ -92,6 +92,8 @@ pub struct Stats {
     /// Large triangles tested and cut on the CPU.
     pub tested: u32,
     pub clipped: u32,
+    /// Microseconds of the frame's phases: choosing meshes, sky and far meshes, far giants, near models, near meshes, moving geometry, interface.
+    pub phase: [u32; 7],
 }
 
 pub struct Gfx {
@@ -456,6 +458,13 @@ impl Gfx {
     pub unsafe fn frame(&mut self, game: &mut Game, world: &World, ticks: u32, perf: &maneuver_handheld::game::Perf) {
         self.stats = Stats::default();
         self.no_clip = game.set.option & 4 != 0;
+        let mut mark = sceKernelGetSystemTimeLow();
+        let mut phase = [0u32; 7];
+        let mut lap = |i: usize| {
+            let now = sceKernelGetSystemTimeLow();
+            phase[i] = now.wrapping_sub(mark);
+            mark = now;
+        };
         let cam = game.camera();
         let scene_h = game.scene.h;
         let (lod_near, lod_mid, lod_far) = game.lod();
@@ -474,6 +483,7 @@ impl Gfx {
             game.actors.giants(&game.sim, &game.scene, &planes, cam.eye, &mut self.giants);
         }
 
+        lap(0);
         sceGuStart(GuContextType::Direct, ptr::addr_of_mut!(LIST.0) as *mut c_void);
         sceGuDepthMask(0);
         sceGuClearColor(abgr(game.scene.fog_srgb()));
@@ -534,6 +544,7 @@ impl Gfx {
             self.meshes(world, false, cam.eye, &far_guard, scene_h.u_range, frame);
         }
         world_state(false);
+        lap(1);
         // Giants out there: whole bodies beyond the near pass's reach.
         let split = lod_near + 30.0;
         self.skinned_state(&game.scene, true);
@@ -546,6 +557,7 @@ impl Gfx {
             self.model((g.variant as usize, g.level as usize, false), &skin, g.sink, &game.scene.lights(g.vis));
         }
 
+        lap(2);
         // ------------------------------------------------------------ near pass
         let near_far = lod_near + 180.0;
         sceGuSetMatrix(MatrixMode::Projection, &fmatrix(&mat::perspective_gl(cam.fov, aspect, scene_h.clip_near, near_far)));
@@ -565,6 +577,7 @@ impl Gfx {
             self.model((0, 0, true), &skin, 0.0, &lights);
         }
         self.skinned_state(&game.scene, false);
+        lap(3);
         let near_guard = Guard::new(&vp, scene_h.clip_near, 480.0, 272.0, 2048.0);
         world_state(true);
         for _ in 0..game.set.repeat {
@@ -573,6 +586,7 @@ impl Gfx {
         world_state(false);
         sceGuDisable(GuState::Texture2D);
         sceGuSetMatrix(MatrixMode::Model, &fmatrix(&mat::IDENTITY));
+        lap(4);
 
         // The cloak, the wires and the soft discs, written into the list's own memory.
         if game.set.actors {
@@ -604,6 +618,7 @@ impl Gfx {
             }
         }
 
+        lap(5);
         // ------------------------------------------------------------ interface
         sceGuDisable(GuState::DepthTest);
         sceGuDisable(GuState::Fog);
@@ -630,5 +645,7 @@ impl Gfx {
         }
         sceGuDisable(GuState::Blend);
         sceGuFinish();
+        lap(6);
+        self.stats.phase = phase;
     }
 }

@@ -518,7 +518,9 @@ fn pica_model(id: u32, m: &Mesh) -> Result<Vec<u8>, String> {
     }
     let mut out = pack::bytes_of(&ModelHeader { id, vtx_count: verts.len() as u32, idx_count: m.idx.len() as u32, pad: 0 }).to_vec();
     for v in &verts {
-        out.extend_from_slice(pack::bytes_of(&SkinVertex { pos: v.pos, normal: v.normal, color: v.color, bones: v.bones, weights: [v.w0, 255 - v.w0] }));
+        // The bone fields hold the bone's first uniform row (bone × 3), ready for the shader's address register:
+        // the PICA's float multiply truncates, so a row number computed in the shader can land one row short.
+        out.extend_from_slice(pack::bytes_of(&SkinVertex { pos: v.pos, normal: v.normal, color: v.color, bones: [v.bones[0] * 3, v.bones[1] * 3], weights: [v.w0, 255 - v.w0] }));
     }
     for &i in &m.idx {
         out.extend_from_slice(&(i as u16).to_le_bytes());

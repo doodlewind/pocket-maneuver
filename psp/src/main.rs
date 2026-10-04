@@ -165,7 +165,8 @@ unsafe fn run() -> Result<(), &'static str> {
     let mut extra = String::with_capacity(512);
     let mut timing = Timing::new();
     let mut perf = Perf::default();
-    let (mut sim_ms, mut build_ms, mut gpu_ms) = (0.0f32, 0.0f32, 0.0f32);
+    let (mut sim_ms, mut build_ms, mut gpu_ms, mut audio_ms) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    let mut phase_ms = [0.0f32; 7];
     let mut last_swap = sceKernelGetSystemTimeLow();
     let mut last_vcount = sceDisplayGetVcount();
     let mut ticks = 1u32;
@@ -177,6 +178,8 @@ unsafe fn run() -> Result<(), &'static str> {
         store::control(|text| game.control(text));
         let t0 = sceKernelGetSystemTimeLow();
         game.step(&read_pad(&data), ticks);
+        sim_ms = sim_ms * 0.9 + ms(t0) * 0.1;
+        let ta = sceKernelGetSystemTimeLow();
         if sound && audio::running() {
             let want = audio::wanted();
             if want > 0 {
@@ -184,7 +187,10 @@ unsafe fn run() -> Result<(), &'static str> {
                 audio::push(&pcm[..want * 2]);
             }
         }
-        sim_ms = sim_ms * 0.9 + ms(t0) * 0.1;
+        audio_ms = audio_ms * 0.9 + ms(ta) * 0.1;
+        for (slot, us) in phase_ms.iter_mut().zip(gfx.stats.phase) {
+            *slot = *slot * 0.9 + us as f32 * 0.0001;
+        }
 
         // -------------------------------------------------------------- the previous frame leaves the GE
         let t1 = sceKernelGetSystemTimeLow();
@@ -240,7 +246,7 @@ unsafe fn run() -> Result<(), &'static str> {
             extra.clear();
             let _ = write!(
                 extra,
-                "\"loadMs\":{},\"pack\":{{\"bytes\":{},\"resident\":{}}},\"memory\":{{\"freeAtStart\":{},\"freeAfterLoad\":{},\"free\":{},\"small\":{},\"large\":{}}},\"cells\":{{\"loaded\":{},\"bytes\":{}}},\"clip\":{{\"tested\":{},\"cut\":{}}},\"meshes\":{{\"near\":{},\"mid\":{},\"far\":{},\"waiting\":{}}},\"sound\":{}",
+                "\"loadMs\":{},\"pack\":{{\"bytes\":{},\"resident\":{}}},\"memory\":{{\"freeAtStart\":{},\"freeAfterLoad\":{},\"free\":{},\"small\":{},\"large\":{}}},\"cells\":{{\"loaded\":{},\"bytes\":{}}},\"clip\":{{\"tested\":{},\"cut\":{}}},\"meshes\":{{\"near\":{},\"mid\":{},\"far\":{},\"waiting\":{}}},\"sound\":{},\"audioMs\":{:.2},\"ticks\":{},\"phaseMs\":{{\"pick\":{:.2},\"far\":{:.2},\"farGiants\":{:.2},\"models\":{:.2},\"near\":{:.2},\"actors\":{:.2},\"hud\":{:.2}}}",
                 load_ms,
                 file.bytes,
                 gfx.resident_bytes,
@@ -257,7 +263,16 @@ unsafe fn run() -> Result<(), &'static str> {
                 gfx.picked.mid,
                 gfx.picked.far,
                 gfx.picked.waiting,
-                sound && audio::running()
+                sound && audio::running(),
+                audio_ms,
+                ticks,
+                phase_ms[0],
+                phase_ms[1],
+                phase_ms[2],
+                phase_ms[3],
+                phase_ms[4],
+                phase_ms[5],
+                phase_ms[6]
             );
             game.status(&mut status, "psp", &perf, &extra);
             store::publish(&status);

@@ -12,7 +12,7 @@
 .in inpos v0
 .in innrm v1
 .in inclr v2
-; bone 0, bone 1, weight 0, weight 1
+; first uniform row of bone 0 and of bone 1, weight 0, weight 1
 .in inbw v3
 .out outpos position
 .out outclr color
@@ -21,10 +21,14 @@
     mov r0.xyz, inpos.xyz
     mov r0.w, consts.x
     mul r10.xyz, more.www, innrm.xyz
-    mul r1.xy, consts.yy, inbw.xy
-    mul r1.zw, consts.zz, inbw.zw
+    ; A source's swizzle is applied before the write mask picks components:
+    ; `mul r1.zw, c.zz, inbw.zw` would read inbw.w for both. Scale all four
+    ; and use r1.z and r1.w.
+    mul r1, consts.zzzz, inbw
 
-    mova a0.x, r1.x
+    ; The attribute holds each bone's first row, a whole number: a product
+    ; computed here could truncate to the row before.
+    mova a0.x, inbw.x
     dp4 r2.x, bones[a0.x], r0
     dp4 r2.y, bones[a0.x+1], r0
     dp4 r2.z, bones[a0.x+2], r0
@@ -32,7 +36,7 @@
     dp3 r3.y, bones[a0.x+1], r10
     dp3 r3.z, bones[a0.x+2], r10
 
-    mova a0.x, r1.y
+    mova a0.x, inbw.y
     dp4 r4.x, bones[a0.x], r0
     dp4 r4.y, bones[a0.x+1], r0
     dp4 r4.z, bones[a0.x+2], r0

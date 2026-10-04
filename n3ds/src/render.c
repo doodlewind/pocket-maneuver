@@ -58,6 +58,7 @@ static MhColorVertex *dynamic_vb[2];
 static MhHudVertex *hud_vb[2];
 static unsigned flip;
 RenderStats render_stats;
+int render_debug[4];
 
 static bool program_init(Program *p, const u8 *shbin, u32 size, const char *extra) {
   p->dvlb = DVLB_ParseFile((u32 *)shbin, size);
@@ -129,6 +130,10 @@ bool render_init(const RenderData *d, char *error, size_t n) {
   }
   skin_bones = skin_prog.extra;
   skin_light = shaderInstanceGetUniformLocation(skin_prog.program.vertexShader, "light");
+  render_debug[0] = skin_prog.projection;
+  render_debug[1] = skin_bones;
+  render_debug[2] = skin_light;
+  render_debug[3] = world_prog.extra;
   /* World: position i16 x 4, texture coordinates i16 x 2, colour u8 x 4. In the buffer: uv, colour, position. */
   AttrInfo_AddLoader(&world_prog.attr, 0, GPU_SHORT, 4);
   AttrInfo_AddLoader(&world_prog.attr, 1, GPU_SHORT, 2);

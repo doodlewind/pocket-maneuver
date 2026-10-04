@@ -206,8 +206,15 @@ switch (cmd) {
     await device(async () => {
       stage();
       rmSync(`${app}/status.json`, { force: true });
-      await pspsh("reset");
-      await Bun.sleep(2500);
+      // PSPLINK lists its own modules last; anything after USBHostFS is a loaded program, and only then is a reset needed.
+      const loaded = (await pspsh("modlist")).split("\n").filter((l) => l.includes("Name:")).map((l) => l.split("Name:")[1]!.trim());
+      if (loaded.at(-1) !== "USBHostFS" && loaded.at(-1) !== "PSPLINK") {
+        console.log(`psp: resetting PSPLINK (${loaded.at(-1)} is loaded)`);
+        await pspsh("reset");
+        await Bun.sleep(3000);
+      }
+      // A PSPLINK that answers the shell but not storage needs a restart on the console; loading would fail with "invalid file".
+      if (!/world\.pack/.test(await pspsh("ls host0:/maneuver"))) throw new Error("PSPLINK does not serve host0: restart PSPLINK on the console");
       await pspsh("ldstart host0:/pocket-maneuver.prx");
       const s = await waitFor((s) => s.stage === "running", 180);
       console.log(JSON.stringify(s, null, 1));

@@ -28,6 +28,8 @@ typedef struct {
 } RenderStats;
 
 extern RenderStats render_stats;
+/* Uniform registers of the skinning program, for the status record. */
+extern int render_debug[4];
 
 bool render_init(const RenderData *data, char *error, size_t n);
 /* Draws one frame between C3D_FrameBegin and C3D_FrameEnd. */
