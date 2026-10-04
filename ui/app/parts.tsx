@@ -247,16 +247,20 @@ function Switch(props: { on: boolean }) {
  * so moving the focus changes one node. A row that only informs is a label
  * and what it means, in a shorter line.
  */
-export function Rows(props: { game: Game; menu: Menu; width: number; rowHeight: number; infoHeight?: number; surface?: SurfaceId }) {
+export function Rows(props: { game: Game; menu: Menu; width: number; rowHeight: number; infoHeight?: number; surface?: SurfaceId; active?: () => boolean }) {
   const info = () => props.infoHeight ?? 22;
+  // A list that is kept but hidden (`active` false) holds its rows and its mark as they were.
+  const live = () => props.active?.() ?? true;
+  const rows = createMemo<Row[]>((before) => (live() ? props.game.rows() : before), []);
+  const focus = createMemo<number>((before) => (live() ? props.menu.focus() : before), 0);
   return (
     <View class="relative flex-col" style={{ width: props.width }}>
-      <Show when={modality.buttons && props.game.rows().some((row) => row.press)}>
-        <View class="absolute transition-transform duration-100 ease-out" style={{ insetL: 0, insetT: 0, width: props.width, height: props.rowHeight, translateY: props.menu.focus() * props.rowHeight, bgColor: WASH }}>
+      <Show when={modality.buttons && rows().some((row) => row.press)}>
+        <View class="absolute transition-transform duration-100 ease-out" style={{ insetL: 0, insetT: 0, width: props.width, height: props.rowHeight, translateY: focus() * props.rowHeight, bgColor: WASH }}>
           <View class="absolute" style={{ insetL: 0, insetT: 0, width: 3, height: props.rowHeight, bgColor: AMBER }} />
         </View>
       </Show>
-      <For each={props.game.rows()}>
+      <For each={rows()}>
         {(row, index) => (
           <Show
             when={row.press}
@@ -280,6 +284,24 @@ export function Rows(props: { game: Game; menu: Menu; width: number; rowHeight: 
           </Show>
         )}
       </For>
+    </View>
+  );
+}
+
+/**
+ * A screen that is built the first time `when` holds (at once with `eager`)
+ * and then stays, shown or hidden. Showing it again builds nothing: on the
+ * PSP a screen takes tenths of a second to build, which a pause can spend and
+ * the moment play resumes cannot.
+ */
+export function Keep(props: { when: boolean; eager?: boolean; width: number; height: number; children: JSX.Element }) {
+  const [built, setBuilt] = createSignal(!!props.eager);
+  createEffect(() => {
+    if (props.when) setBuilt(true);
+  });
+  return (
+    <View class="absolute" style={{ insetL: 0, insetT: 0, width: props.width, height: props.height, display: props.when ? 0 : 1, hitPass: 1 }}>
+      <Show when={built()}>{props.children}</Show>
     </View>
   );
 }

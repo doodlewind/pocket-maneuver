@@ -123,7 +123,7 @@ impl Shell {
             state.message.clear();
             state.message.push_str(message);
         }
-        self.ui.turn(interface::TURN, &interface::NEUTRAL, true);
+        self.ui.turn(interface::TURN, &interface::NEUTRAL, true, None);
         if !self.ui.live() && self.font.is_null() {
             self.font = g::vita2d_load_default_pgf();
         }
@@ -569,7 +569,7 @@ fn main() {
                     state.stats = format!("{:.1} fps · {:.1} ms · late {} · {} draws · {}k tris", 1000.0 / timing.avg().max(0.1), timing.avg(), timing.late, wstats.draws + actor_stats.0, (wstats.tris + actor_stats.1) / 1000);
                 }
             }
-            shell.ui.turn(vblanks as f32 / 60.0, &pad, menu);
+            shell.ui.turn(vblanks as f32 / 60.0, &pad, menu, Some(&session));
             ui_ms = ui_ms * 0.9 + tu.elapsed().as_secs_f32() * 100.0;
 
             // -------------------------------------------------------------- camera

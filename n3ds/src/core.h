@@ -138,6 +138,9 @@ void mh_prefs_stored(const char *text, uint32_t len);
 uint32_t mh_prefs_take(char *out, uint32_t cap);
 /* The sound setting is on and the game is not paused. */
 uint32_t mh_audible(void);
+/* Whether the guest's next turn is worth taking: it has something scheduled, the game has news for it,
+ * or a button it listens to changed (`buttons` as held since the last offer; `touching`: a contact). */
+uint32_t mh_guest_due(uint32_t buttons, uint32_t touching);
 /* A guest holds the interface's channel. */
 uint32_t mh_interface_open(void);
 

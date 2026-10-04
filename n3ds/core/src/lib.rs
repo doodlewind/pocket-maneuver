@@ -24,7 +24,7 @@ use maneuver_handheld::hud::{Font, Hud, HudVertex};
 use maneuver_handheld::mat::{self, Mat4};
 use maneuver_handheld::scene::Scene;
 use maneuver_handheld::world::{Pick, World};
-use maneuver_interface::{channel, Mode};
+use maneuver_interface::{channel, Mode, Pace};
 use maneuver_pack::{HandMesh, HandScene, PicaVertex};
 use maneuver_sim::pose::{BONES, CLOAK_N};
 
@@ -113,7 +113,9 @@ pub unsafe extern "C" fn mh_init(scene: *const HandScene, meshes: *const HandMes
         Ok((f, _)) => f,
         Err(_) => return fail("the pack's font does not load\0"),
     };
-    let game = Game::new(sim, scene);
+    let mut game = Game::new(sim, scene);
+    // The numbers in flight 15 times a second: each refresh is a turn of the guest.
+    game.session.numbers_every = 4;
     APP = Some(App { game, world, font, far: Vec::with_capacity(1024), near: Vec::with_capacity(256), giants: Vec::with_capacity(32), vp: mat::IDENTITY, text: String::with_capacity(4096) });
     core::ptr::null()
 }
@@ -334,6 +336,18 @@ pub unsafe extern "C" fn mh_prefs_take(out: *mut u8, cap: u32) -> u32 {
 #[no_mangle]
 pub extern "C" fn mh_audible() -> u32 {
     game().is_some_and(|g| g.audible()) as u32
+}
+
+/// Whether the guest's next turn is worth taking (`maneuver_interface::Pace`): a turn runs the whole
+/// framework's frame however little changed. `buttons` are the guest's as held since the last offer,
+/// `touching` a contact on a surface it reads. Before the game exists every turn is taken.
+#[no_mangle]
+pub extern "C" fn mh_guest_due(buttons: u32, touching: u32) -> u32 {
+    static mut PACE: Pace = Pace::new();
+    match game() {
+        Some(g) => unsafe { (*core::ptr::addr_of_mut!(PACE)).due(&g.session, buttons, touching != 0) as u32 },
+        None => 1,
+    }
 }
 
 /// A guest holds the interface's channel.

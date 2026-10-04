@@ -56,15 +56,27 @@ export interface Game {
   on(key: string): boolean;
 }
 
+/** How many pulses are showing: while one is, a timer is pending. */
+const [pulsing, setPulsing] = createSignal(0);
+
 /** True for `seconds` after each `show()`. */
 export function createPulse(seconds: number): [Accessor<boolean>, () => void] {
   const [shown, setShown] = createSignal(false);
   let cancel: (() => void) | undefined;
-  onCleanup(() => cancel?.());
+  const hide = () => {
+    if (!untrack(shown)) return;
+    setShown(false);
+    setPulsing((count) => count - 1);
+  };
+  onCleanup(() => {
+    cancel?.();
+    hide();
+  });
   return [shown, () => {
     cancel?.();
+    if (!untrack(shown)) setPulsing((count) => count + 1);
     setShown(true);
-    cancel = after(seconds, () => setShown(false));
+    cancel = after(seconds, hide);
   }];
 }
 
@@ -118,13 +130,13 @@ export function createGame(host: Host, touch: boolean): Game {
   createEffect(on(mode, () => setSheet("menu")));
 
   // A note stands for a moment, then leaves.
-  let cancel: (() => void) | undefined;
-  onCleanup(() => cancel?.());
+  const [noted, showNote] = createPulse(1.6);
   createEffect(on(host.noteId, () => {
-    cancel?.();
     setNote(host.note());
-    cancel = after(1.6, () => setNote(""));
+    showNote();
   }, { defer: true }));
+  // With no pulse showing nothing is scheduled here: the renderer may skip turns until it has news.
+  createEffect(() => host.ready() && host.send({ type: "idle", on: pulsing() === 0 }));
 
   // What the renderer stored for us last time: the best run, and the
   // settings, which it is told again once it has listed them.
@@ -171,30 +183,37 @@ export function createGame(host: Host, touch: boolean): Game {
       return { label, value: choices[setting.value] ?? "", press: () => set(setting, (setting.value + 1) % choices.length) };
     });
 
-  const rows = createMemo<Row[]>(() => {
-    if (sheet() === "settings") return settings();
-    if (sheet() === "controls") return controls(touch).map(([label, value]) => ({ label, value }));
-    const more: Row[] = [
-      { label: touch ? "How to play" : "Controls", press: () => setSheet("controls") },
-      { label: "Settings", press: () => setSheet("settings") },
-    ];
-    if (mode() === "title") return [{ label: "Play", press: () => host.send({ type: "start" }) }, ...more];
-    if (mode() === "paused") {
-      return [
-        { label: "Resume", press: () => host.send({ type: "pause", on: false }) },
-        { label: "Restart", press: () => host.send({ type: "restart" }) },
-        ...more,
-        { label: "Quit to title", press: () => host.send({ type: "title" }) },
-      ];
-    }
-    return [
+  // Each mode's own list is built once: showing it again changes no row.
+  const more: Row[] = [
+    { label: touch ? "How to play" : "Controls", press: () => setSheet("controls") },
+    { label: "Settings", press: () => setSheet("settings") },
+  ];
+  const menus: Partial<Record<Mode, Row[]>> = {
+    title: [{ label: "Play", press: () => host.send({ type: "start" }) }, ...more],
+    paused: [
+      { label: "Resume", press: () => host.send({ type: "pause", on: false }) },
+      { label: "Restart", press: () => host.send({ type: "restart" }) },
+      ...more,
+      { label: "Quit to title", press: () => host.send({ type: "title" }) },
+    ],
+    results: [
       { label: "Again", press: () => host.send({ type: "restart" }) },
       { label: "Title", press: () => host.send({ type: "title" }) },
-    ];
-  });
+    ],
+  };
+  const explained: Row[] = controls(touch).map(([label, value]) => ({ label, value }));
+  // In play no list is up: the rows stay what they were, so nothing is rebuilt under the gauges.
+  const rows = createMemo<Row[]>((before) => {
+    if (!listing()) return before;
+    if (sheet() === "settings") return settings();
+    if (sheet() === "controls") return explained;
+    return menus[mode()] ?? before;
+  }, []);
 
   return {
-    host, mode, listing, sheet, rows, note, record,
+    host, mode, listing, sheet, rows, record,
+    // A note belongs to play: it does not stand under a list.
+    note: () => (mode() === "play" && noted() ? note() : ""),
     heading: () => {
       if (sheet() === "settings") return "SETTINGS";
       if (sheet() === "controls") return touch ? "HOW TO PLAY" : "CONTROLS";

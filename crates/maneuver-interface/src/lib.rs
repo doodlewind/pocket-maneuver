@@ -27,7 +27,7 @@ pub mod session;
 #[cfg(feature = "wire")]
 pub mod wire;
 
-pub use session::{pad, Pad, Session};
+pub use session::{pad, Pace, Pad, Session};
 
 /// What the screen is for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -216,6 +216,9 @@ pub enum Command {
     Look { dx: f32, dy: f32 },
     /// To store, and to hand back in [`State::prefs`].
     Prefs(String),
+    /// The interface has nothing scheduled (no note standing, no hint fading): a turn is worth its
+    /// cost only when the renderer has news for it or a button it listens to changes.
+    Idle(bool),
 }
 
 /// The value after `"key":` in a flat JSON object. Quoted text is skipped
@@ -307,6 +310,7 @@ impl Command {
             "drive" => Command::Drive { mx: n("mx") / 100.0, my: n("my") / 100.0, lx: n("lx") / 100.0, ly: n("ly") / 100.0, buttons: n("b").max(0.0) as u32 },
             "look" => Command::Look { dx: n("dx"), dy: n("dy") },
             "prefs" => Command::Prefs(text(line, "value")?),
+            "idle" => Command::Idle(flag(line, "on")),
             _ => return None,
         })
     }
@@ -342,12 +346,41 @@ impl Interface {
 
     /// The state line, when the guest has not seen this state.
     pub fn poll(&mut self) -> Option<String> {
+        self.poll_within(usize::MAX)
+    }
+
+    /// The same for a guest whose buffer takes `capacity` bytes: a longer line is not sent, and
+    /// stays owed.
+    pub fn poll_within(&mut self, capacity: usize) -> Option<String> {
         if !self.open {
             return None;
         }
-        let line = self.state.line(self.sent.as_ref())?;
+        let line = self.state.line(self.sent.as_ref()).filter(|line| line.len() <= capacity)?;
         self.sent = Some(self.state.clone());
         Some(line)
+    }
+
+    /// The guest has not seen the state as it now is.
+    pub fn news(&self) -> bool {
+        self.open && self.sent.as_ref() != Some(&self.state)
+    }
+
+    /// What the guest has not seen is at most readouts (the numbers in flight, the statistics
+    /// line): text swapped in place, with nothing set moving.
+    pub fn only_readouts(&self) -> bool {
+        let Some(sent) = &self.sent else { return false };
+        let State { mode, message, kills, total, alive, note, note_id, result, options, giants, prefs, stats: _, t: _ } = &self.state;
+        *mode == sent.mode
+            && *message == sent.message
+            && *kills == sent.kills
+            && *total == sent.total
+            && *alive == sent.alive
+            && *note == sent.note
+            && *note_id == sent.note_id
+            && *result == sent.result
+            && *options == sent.options
+            && *giants == sent.giants
+            && *prefs == sent.prefs
     }
 
     /// A line from the guest.
@@ -395,6 +428,7 @@ mod tests {
         assert_eq!(parse(r#"{"type":"drive","mx":0,"my":72,"lx":-100,"ly":0,"b":5}"#), Command::Drive { mx: 0.0, my: 0.72, lx: -1.0, ly: 0.0, buttons: 5 });
         assert_eq!(parse(r#"{"type":"look","dx":-3.5,"dy":12}"#), Command::Look { dx: -3.5, dy: 12.0 });
         assert_eq!(parse(r#"{"type":"prefs","value":"{\"best\":812}"}"#), Command::Prefs(r#"{"best":812}"#.into()));
+        assert_eq!(parse(r#"{"type":"idle","on":true}"#), Command::Idle(true));
         assert_eq!(Command::parse(r#"{"type":"pocket.overlay.control","name":"x","node":3}"#), None);
         // A value that looks like a key is not one.
         assert_eq!(parse(r#"{"type":"prefs","value":"\"type\":\"title\""}"#), Command::Prefs(r#""type":"title""#.into()));
@@ -427,6 +461,9 @@ mod tests {
         assert_eq!(interface.next(), Some(Command::Pause(false)));
         assert_eq!(interface.next(), Some(Command::Title));
         assert_eq!(interface.next(), None);
+        assert!(!interface.news());
+        interface.state.kills = 1;
+        assert!(interface.news());
         // A guest that starts again is sent everything.
         assert!(interface.open("pocket.overlay"));
         assert!(interface.poll().unwrap().contains("\"total\":32"));

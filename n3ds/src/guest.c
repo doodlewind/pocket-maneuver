@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "core.h"
 #include "gfx.h"
 #include "input.h"
 #include "offload.h"
@@ -177,6 +178,11 @@ void guest_turn(float dt) {
   if (owed < TURN)
     return;
   owed -= TURN;
+  /* A turn costs milliseconds however little changed: an idle guest takes one when there is a reason. */
+  if (!mh_guest_due(held, touched || stylus) && !press_count) {
+    held = 0;
+    return;
+  }
   turn();
 }
 

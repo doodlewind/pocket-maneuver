@@ -2,14 +2,14 @@
 // is a control under a thumb. In play a stick stands in the lower left to
 // move, the keys in the lower right fire the wires, burn gas and cut, and a
 // finger anywhere else turns the view. Lists are buttons a finger presses.
-import { createSignal, For, Match, onMount, Show, Switch as Case, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from "solid-js";
 import { Text, View } from "@pocketjs/framework/components";
 import { createGesture } from "@pocketjs/framework/gesture";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import type { NodeMirror } from "@pocketjs/framework/renderer";
-import { clock, createGame, createPulse, type Game } from "../game.ts";
+import { clock, createGame, createPulse, type Game, type Row } from "../game.ts";
 import { connectHost, type Host } from "../host.ts";
-import { Button, Chip, createMenu, Fade, Gauge, Heading, Loading, type Menu, Note, Panel, Result, Rows, Speed, Stats, Targets, Touchable, TownMap, Wordmark } from "../parts.tsx";
+import { Button, Chip, createMenu, Fade, Gauge, Heading, Keep, Loading, type Menu, Note, Panel, Result, Rows, Speed, Stats, Targets, Touchable, TownMap, Wordmark } from "../parts.tsx";
 import { PLAY } from "../protocol.ts";
 import { AMBER, DIM, HAIRLINE, INK, NIGHT, tint } from "../theme.ts";
 
@@ -23,33 +23,31 @@ export default function TouchScreen() {
   const menu = createMenu(game);
   return (
     <View class="relative w-full h-full">
-      <Case>
-        <Match when={host.mode() === "loading" || host.mode() === "error"}><Loading host={host} width={W} height={H} /></Match>
-        <Match when={host.mode() === "title"}><Title game={game} menu={menu} /></Match>
-        {/* The controls stay mounted under the pause list: resuming builds nothing. */}
-        <Match when={host.mode() === "play" || host.mode() === "paused"}>
-          <Play game={game} />
-          <Show when={host.mode() === "paused"}><Paused game={game} menu={menu} /></Show>
-        </Match>
-        <Match when={host.mode() === "results"}><Results game={game} menu={menu} /></Match>
-      </Case>
+      <Show when={host.mode() === "loading" || host.mode() === "error"}><Loading host={host} width={W} height={H} /></Show>
+      <Keep when={host.mode() === "title"} eager width={W} height={H}><Title game={game} menu={menu} /></Keep>
+      {/* The controls stay built under the pause list: a pause and its end build nothing. */}
+      <Keep when={host.mode() === "play" || host.mode() === "paused"} eager width={W} height={H}><Play game={game} /></Keep>
+      <Keep when={host.mode() === "paused"} eager width={W} height={H}><Paused game={game} menu={menu} /></Keep>
+      <Keep when={host.mode() === "results"} width={W} height={H}><Results game={game} menu={menu} /></Keep>
     </View>
   );
 }
 
 /** The list that is up: its heading with the way back, and its rows under whatever stands between. */
-function Sheet(props: { game: Game; menu: Menu; width: number; children?: JSX.Element }) {
+function Sheet(props: { game: Game; menu: Menu; width: number; active: () => boolean; children?: JSX.Element }) {
   return (
     <View class="flex-col">
       <Heading text={props.game.heading()} width={props.width} height={TARGET} back={props.game.sheet() !== "menu" ? "Back" : props.game.mode() === "paused" ? "Resume" : undefined} onBack={props.game.back} />
       {props.children}
-      <Rows game={props.game} menu={props.menu} width={props.width} rowHeight={TARGET} infoHeight={30} />
+      <Rows game={props.game} menu={props.menu} width={props.width} rowHeight={TARGET} infoHeight={30} active={props.active} />
     </View>
   );
 }
 
 function Title(props: { game: Game; menu: Menu }) {
   const game = props.game;
+  // The title's own rows as buttons; kept as they are while another list is up.
+  const rows = createMemo<Row[]>((before) => (game.mode() === "title" && game.sheet() === "menu" ? game.rows() : before), []);
   return (
     <View class="relative w-full h-full">
       <View class="absolute bg-gradient-to-r from-[#000000c0] to-[#00000000]" style={{ insetL: 0, insetT: 0, width: 340, height: H }} />
@@ -60,10 +58,10 @@ function Title(props: { game: Game; menu: Menu }) {
       </Show>
       <Show
         when={game.sheet() === "menu"}
-        fallback={<Panel width={W} height={H} panelWidth={360} panelHeight={296}><Sheet game={game} menu={props.menu} width={360} /></Panel>}
+        fallback={<Panel width={W} height={H} panelWidth={360} panelHeight={296}><Sheet game={game} menu={props.menu} width={360} active={() => game.mode() === "title"} /></Panel>}
       >
         <View class="absolute flex-col gap-2" style={{ insetL: 28, insetT: 132 }}>
-          <For each={game.rows()}>
+          <For each={rows()}>
             {(row, index) => <Button label={row.label} width={200} height={TARGET} strong={index() === 0} onPress={() => props.menu.press(index())} />}
           </For>
         </View>
@@ -78,7 +76,7 @@ function Paused(props: { game: Game; menu: Menu }) {
   return (
     <Panel width={W} height={H} panelWidth={460} panelHeight={296}>
       <View class="items-center justify-center" style={{ width: MAP + 20, height: 296 }}><TownMap host={props.game.host} size={MAP} /></View>
-      <Sheet game={props.game} menu={props.menu} width={460 - MAP - 20} />
+      <Sheet game={props.game} menu={props.menu} width={460 - MAP - 20} active={() => props.game.mode() === "paused"} />
     </Panel>
   );
 }
@@ -86,7 +84,7 @@ function Paused(props: { game: Game; menu: Menu }) {
 function Results(props: { game: Game; menu: Menu }) {
   return (
     <Panel width={W} height={H} panelWidth={340} panelHeight={props.game.sheet() === "menu" ? 232 : 296}>
-      <Sheet game={props.game} menu={props.menu} width={340}>
+      <Sheet game={props.game} menu={props.menu} width={340} active={() => props.game.mode() === "results"}>
         <Show when={props.game.sheet() === "menu"}>
           <View style={{ paddingT: 10, paddingB: 8 }}><Result game={props.game} width={340} /></View>
         </Show>
@@ -208,7 +206,7 @@ function Play(props: { game: Game }) {
     },
   });
   const [hint, showHint] = createPulse(6);
-  onMount(showHint);
+  createEffect(on(host.mode, (mode, before) => mode === "play" && before !== "paused" && showHint()));
   const clockNow = () => seconds;
   return (
     <View class="relative w-full h-full">

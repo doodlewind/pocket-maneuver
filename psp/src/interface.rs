@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 
 use libquickjs_sys::*;
-use maneuver_interface::{channel, guest};
+use maneuver_interface::{channel, guest, Pace, Session};
 use pocketjs_psp::{arena, ffi, ge, host, pak, qjs_alloc};
 use psp::sys::sceKernelGetSystemTimeLow;
 
@@ -47,6 +47,10 @@ pub struct Ui {
     collected: usize,
     /// What it last drew, for the frames between its turns.
     words: (*const u32, usize),
+    /// The last turn's script has run and its layout has not.
+    laid_out: bool,
+    /// Which of the turns it is offered are taken.
+    pace: Pace,
     /// Buttons a control message presses, and for how many more turns: a press is held two turns and
     /// let go for one; a rest holds nothing.
     presses: VecDeque<(u32, u8)>,
@@ -81,7 +85,7 @@ impl Ui {
     /// No interface: the pad keeps the game's flow itself.
     pub fn none(why: &str) -> Ui {
         unsafe { channel().close() };
-        Ui { guest: None, owed: TURN, latched: 0, collected: 0, words: (core::ptr::null(), 0), presses: VecDeque::new(), error: why.into(), script_ms: 0.0, layout_ms: 0.0, worst_ms: 0.0, turns: 0 }
+        Ui { guest: None, owed: TURN, latched: 0, collected: 0, words: (core::ptr::null(), 0), laid_out: false, pace: Pace::default(), presses: VecDeque::new(), error: why.into(), script_ms: 0.0, layout_ms: 0.0, worst_ms: 0.0, turns: 0 }
     }
 
     /// Boots the guest: `script` is the bundle, NUL-terminated (not needed once this returns), `pak`
@@ -117,7 +121,7 @@ impl Ui {
         }
         host::drain_jobs(rt);
         JS_RunGC(rt);
-        Ui { guest: Some((rt, ctx, global, frame)), owed: TURN, latched: 0, collected: arena::stats().bump_bytes, words: (core::ptr::null(), 0), presses: VecDeque::new(), error: String::new(), script_ms: 0.0, layout_ms: 0.0, worst_ms: 0.0, turns: 0 }
+        Ui { guest: Some((rt, ctx, global, frame)), owed: TURN, latched: 0, collected: arena::stats().bump_bytes, words: (core::ptr::null(), 0), laid_out: false, pace: Pace::default(), presses: VecDeque::new(), error: String::new(), script_ms: 0.0, layout_ms: 0.0, worst_ms: 0.0, turns: 0 }
     }
 
     /// The guest is on the screen.
@@ -138,14 +142,39 @@ impl Ui {
     /// The guest's turn when `dt` more seconds make one due: the pad goes in (a button held at any
     /// frame since the last turn counts), and what it shows is laid out. What it asked for waits in
     /// the channel for `Game::step`.
-    pub unsafe fn turn(&mut self, dt: f32, buttons: u32, analog: u32) {
+    ///
+    /// `session` says whether the turn is worth taking: one costs this CPU 4 to 6 ms however little
+    /// changed, so an idle guest is turned only when there is news or a button it listens to moved.
+    pub unsafe fn turn(&mut self, dt: f32, buttons: u32, analog: u32, session: &Session) {
         self.latched |= buttons;
         self.owed = (self.owed + dt).min(2.0 * TURN);
         let Some((rt, ctx, global, frame)) = self.guest else { return };
+        // A turn takes two frames: the script on one, layout and the list of what it shows on the
+        // next. Each half is several milliseconds of this CPU, and the scene's frame has room for one.
+        if self.laid_out {
+            self.laid_out = false;
+            let start = sceKernelGetSystemTimeLow();
+            let core = ffi::ui();
+            for _ in 0..TICKS {
+                core.tick();
+            }
+            let list = core.draw();
+            self.words = (list.words.as_ptr(), list.words.len());
+            let layout = sceKernelGetSystemTimeLow().wrapping_sub(start) as f32 / 1000.0;
+            if self.turns > 8 {
+                self.layout_ms += (layout - self.layout_ms) * 0.1;
+                self.worst_ms = self.worst_ms.max(layout);
+            }
+            return;
+        }
         if self.owed < TURN {
             return;
         }
         self.owed -= TURN;
+        if !self.pace.due(session, self.latched, false) && self.presses.is_empty() {
+            self.latched = 0;
+            return;
+        }
         let start = sceKernelGetSystemTimeLow();
         let mut buttons = core::mem::take(&mut self.latched);
         if let Some((pressed, turns)) = self.presses.front_mut() {
@@ -172,21 +201,13 @@ impl Ui {
             JS_RunGC(rt);
             self.collected = arena::stats().bump_bytes;
         }
-        let scripted = sceKernelGetSystemTimeLow();
-        let core = ffi::ui();
-        for _ in 0..TICKS {
-            core.tick();
-        }
-        let list = core.draw();
-        self.words = (list.words.as_ptr(), list.words.len());
-        let end = sceKernelGetSystemTimeLow();
-        let (script, layout) = (scripted.wrapping_sub(start) as f32 / 1000.0, end.wrapping_sub(scripted) as f32 / 1000.0);
+        let script = sceKernelGetSystemTimeLow().wrapping_sub(start) as f32 / 1000.0;
+        self.laid_out = true;
         self.turns += 1;
         // The first turns mount the screen; the figures are for the ones after.
         if self.turns > 8 {
             self.script_ms += (script - self.script_ms) * 0.1;
-            self.layout_ms += (layout - self.layout_ms) * 0.1;
-            self.worst_ms = self.worst_ms.max(script + layout);
+            self.worst_ms = self.worst_ms.max(script);
         }
     }
 

@@ -2,12 +2,12 @@
 // town from above on the touch screen below. A list (the title, a pause, a
 // finished run, the settings) takes the lower screen, where a finger or the
 // d-pad walks it, and the top screen says what it is for.
-import { createEffect, Match, on, Show, Switch as Case } from "solid-js";
+import { createEffect, on, Show } from "solid-js";
 import { AuxiliarySurface, Text, View } from "@pocketjs/framework/components";
 import { glyph } from "@pocketjs/framework/modality";
 import { clock, createGame, createPulse, type Game } from "../game.ts";
 import { connectHost } from "../host.ts";
-import { Button, Chip, createMenu, Fade, Gauge, Heading, Legend, Loading, type Menu, Note, playHint, Result, Rows, Speed, Stats, Targets, TownMap, Wordmark } from "../parts.tsx";
+import { Button, Chip, createMenu, Fade, Gauge, Heading, Keep, Legend, Loading, type Menu, Note, playHint, Result, Rows, Speed, Stats, Targets, TownMap, Wordmark } from "../parts.tsx";
 import { DIM, HAIRLINE, INK, NIGHT } from "../theme.ts";
 
 const TOP = { w: 400, h: 240 };
@@ -21,42 +21,31 @@ export default function DualScreen() {
   return (
     <>
       <View class="relative" style={{ width: TOP.w, height: TOP.h }}>
-        <Case>
-          <Match when={host.mode() === "loading" || host.mode() === "error"}><Loading host={host} width={TOP.w} height={TOP.h} /></Match>
-          <Match when={host.mode() === "title"}><TitleTop game={game} /></Match>
-          {/* The gauges and the map stay mounted through a pause: resuming builds nothing. */}
-          <Match when={host.mode() === "play" || host.mode() === "paused"}>
-            <PlayTop game={game} />
-            <Show when={host.mode() === "paused"}>
-              <View class="absolute items-center justify-center" style={{ insetL: 0, insetT: 0, width: TOP.w, height: TOP.h, bgColor: "#00000080" }}>
-                <Text class="text-2xl font-bold tracking-wide" style={{ textColor: INK }}>PAUSED</Text>
-              </View>
-            </Show>
-          </Match>
-          <Match when={host.mode() === "results"}>
-            <View class="items-center justify-center" style={{ width: TOP.w, height: TOP.h, bgColor: "#00000080" }}>
-              <Result game={game} width={TOP.w} />
-            </View>
-          </Match>
-        </Case>
+        <Show when={host.mode() === "loading" || host.mode() === "error"}><Loading host={host} width={TOP.w} height={TOP.h} /></Show>
+        <Keep when={host.mode() === "title"} eager width={TOP.w} height={TOP.h}><TitleTop game={game} /></Keep>
+        <Keep when={host.mode() === "play" || host.mode() === "paused" || host.mode() === "results"} eager width={TOP.w} height={TOP.h}><PlayTop game={game} /></Keep>
+        <Show when={host.mode() === "paused"}>
+          <View class="absolute items-center justify-center" style={{ insetL: 0, insetT: 0, width: TOP.w, height: TOP.h, bgColor: "#00000080" }}>
+            <Text class="text-2xl font-bold tracking-wide" style={{ textColor: INK }}>PAUSED</Text>
+          </View>
+        </Show>
+        <Show when={host.mode() === "results"}>
+          <View class="absolute items-center justify-center" style={{ insetL: 0, insetT: 0, width: TOP.w, height: TOP.h, bgColor: "#00000099" }}>
+            <Result game={game} width={TOP.w} />
+          </View>
+        </Show>
       </View>
       <AuxiliarySurface>
         {() => (
           <View class="relative" style={{ width: LOW.w, height: LOW.h, bgColor: NIGHT }}>
-            <Case>
-              <Match when={host.mode() === "loading" || host.mode() === "error"}>
-                <View class="items-center justify-center" style={{ width: LOW.w, height: LOW.h }}>
-                  <Text class="text-sm" style={{ textColor: DIM }}>{host.mode() === "error" ? "The game could not start" : "Loading"}</Text>
-                </View>
-              </Match>
-              <Match when={host.mode() === "play" || host.mode() === "paused"}>
-                <PlayLow game={game} />
-                <Show when={host.mode() === "paused"}>
-                  <View class="absolute" style={{ insetL: 0, insetT: 0, width: LOW.w, height: LOW.h, bgColor: NIGHT }}><ListLow game={game} menu={menu} /></View>
-                </Show>
-              </Match>
-              <Match when={game.listing()}><ListLow game={game} menu={menu} /></Match>
-            </Case>
+            <Show when={host.mode() === "loading" || host.mode() === "error"}>
+              <View class="items-center justify-center" style={{ width: LOW.w, height: LOW.h }}>
+                <Text class="text-sm" style={{ textColor: DIM }}>{host.mode() === "error" ? "The game could not start" : "Loading"}</Text>
+              </View>
+            </Show>
+            {/* The map stays built under the lists: a pause and its end build nothing. */}
+            <Keep when={host.mode() === "play"} eager width={LOW.w} height={LOW.h}><PlayLow game={game} /></Keep>
+            <Keep when={game.listing()} eager width={LOW.w} height={LOW.h}><ListLow game={game} menu={menu} /></Keep>
           </View>
         )}
       </AuxiliarySurface>
@@ -80,7 +69,7 @@ function TitleTop(props: { game: Game }) {
 function PlayTop(props: { game: Game }) {
   const host = props.game.host;
   const [hint, showHint] = createPulse(6);
-  createEffect(on(() => host.kills() === 0 && host.t[2] === 0, (fresh) => fresh && showHint()));
+  createEffect(on(host.mode, (mode, before) => mode === "play" && before !== "paused" && showHint()));
   return (
     <View class="relative" style={{ width: TOP.w, height: TOP.h }}>
       <View class="absolute" style={{ insetL: 12, insetB: 12 }}><Gauge host={host} width={112} /></View>
@@ -114,7 +103,7 @@ function PlayLow(props: { game: Game }) {
 function ListLow(props: { game: Game; menu: Menu }) {
   const game = props.game;
   return (
-    <View class="relative flex-col" style={{ width: LOW.w, height: LOW.h }}>
+    <View class="relative flex-col" style={{ width: LOW.w, height: LOW.h, bgColor: NIGHT }}>
       <View style={{ width: LOW.w, height: BAR, bgColor: "#161a24" }}>
         <Heading text={game.heading() || "POCKET MANEUVER"} width={LOW.w} height={BAR} back={game.sheet() !== "menu" ? "Back" : undefined} onBack={game.back} surface="auxiliary" />
       </View>

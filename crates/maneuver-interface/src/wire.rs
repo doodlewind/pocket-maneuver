@@ -21,13 +21,8 @@ pub extern "C" fn svcwire_pump() {}
 /// `out` has room for `capacity` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn svcwire_recv_lines(out: *mut u8, capacity: usize) -> usize {
-    let interface = channel();
-    let Some(line) = interface.state.line(interface.sent.as_ref()) else { return 0 };
-    if !interface.open || line.len() > capacity {
-        return 0;
-    }
+    let Some(line) = channel().poll_within(capacity) else { return 0 };
     core::ptr::copy_nonoverlapping(line.as_ptr(), out, line.len());
-    interface.sent = Some(interface.state.clone());
     line.len()
 }
 

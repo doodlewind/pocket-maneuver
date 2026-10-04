@@ -791,7 +791,10 @@ impl Gfx {
         // PocketJS's GE backend sets blending and texturing for itself and leaves both off; it
         // draws in screen coordinates, which the wrap mode, the texture scale and the matrices do not touch.
         sceGuTexWrap(GuTexWrapMode::Clamp, GuTexWrapMode::Clamp);
-        ui.draw();
+        // `option=8` leaves it out, for measuring what it costs the GE.
+        if game.set.option & 8 == 0 {
+            ui.draw();
+        }
         sceGuFinish();
         lap(7);
         self.stats.phase = phase;

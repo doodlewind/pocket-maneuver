@@ -55,6 +55,11 @@ pub struct Session {
     pub auto: bool,
     /// Pushing the camera stick up looks down.
     pub invert: bool,
+    /// The interface has nothing scheduled (see [`Pace`]).
+    pub idle: bool,
+    /// The numbers in flight are refreshed every this many frames: 2 is 30 times a second. Each
+    /// refresh is a line the guest reads in a turn, so a slow machine sets more.
+    pub numbers_every: u32,
     note: String,
     note_id: u32,
     /// Controls drawn on a touch panel.
@@ -73,7 +78,7 @@ impl Default for Session {
 
 impl Session {
     pub fn new() -> Session {
-        Session { mode: Mode::Title, auto: true, invert: false, note: String::new(), note_id: 0, drive: Pad::default(), look: (0.0, 0.0), prev_buttons: u32::MAX, frames: 0 }
+        Session { mode: Mode::Title, auto: true, invert: false, idle: false, numbers_every: 2, note: String::new(), note_id: 0, drive: Pad::default(), look: (0.0, 0.0), prev_buttons: u32::MAX, frames: 0 }
     }
 
     /// A line for the middle of the screen.
@@ -120,6 +125,7 @@ impl Session {
             }
             Command::Option { ref key, value } if key == "invert" => self.invert = value != 0,
             Command::Drive { mx, my, lx, ly, buttons } => self.drive = Pad { buttons: buttons & pad::PLAY, lx: mx, ly: my, rx: lx, ry: ly },
+            Command::Idle(on) => self.idle = on,
             Command::Look { dx, dy } => {
                 self.look.0 = clamp(self.look.0 + dx * LOOK, -1.5, 1.5);
                 self.look.1 = clamp(self.look.1 - dy * LOOK, -1.0, 1.0);
@@ -236,7 +242,7 @@ impl Session {
             state.result = [sim.run.ticks / 6, libm::roundf(sim.run.max_speed * 3.6) as u32];
         }
         // The numbers in flight show in play; behind the title they would cost the guest a line a turn.
-        if self.mode != Mode::Play {
+        if self.mode != Mode::Play || self.frames % self.numbers_every.max(1) != 0 {
             return;
         }
         let p = &sim.p;
@@ -250,6 +256,48 @@ impl Session {
             heading: heading.rem_euclid(360),
             wires: (p.hooks[0].state == hook::ATTACHED) as i32 | ((p.hooks[1].state == hook::ATTACHED) as i32) << 1,
         };
+    }
+}
+
+/// PocketJS's START button, the one the interface listens to during play.
+const GUEST_START: u32 = 0x0008;
+/// Turns after the last reason for one: a row's highlight or a switch is still moving.
+const LINGER: u8 = 12;
+
+/// Whether the guest's next turn is worth its cost. A turn runs the whole framework's frame, which
+/// is milliseconds on a PSP or a 3DS however little changed, so a device offers the guest a turn
+/// at its rate and takes it only when this says so.
+#[derive(Default)]
+pub struct Pace {
+    buttons: u32,
+    linger: u8,
+}
+
+impl Pace {
+    pub const fn new() -> Pace {
+        Pace { buttons: 0, linger: 0 }
+    }
+
+    /// `buttons` are the guest's (PocketJS bits) as held since the last offer; `touching` is any
+    /// contact on a surface the guest reads. A turn is due while the guest has something scheduled,
+    /// when the renderer has news for it, when what it listens to changed (in play, START alone;
+    /// elsewhere every button), while a finger is down, and for a few turns after any of those but
+    /// a readout: new numbers are one turn, with nothing left moving after it.
+    pub fn due(&mut self, session: &Session, buttons: u32, touching: bool) -> bool {
+        let heard = if session.mode == Mode::Play { buttons & GUEST_START } else { buttons };
+        let changed = heard != self.buttons;
+        self.buttons = heard;
+        let interface = unsafe { channel() };
+        let news = interface.news();
+        if !session.idle || changed || touching || (news && !interface.only_readouts()) {
+            self.linger = LINGER;
+            return true;
+        }
+        if self.linger > 0 {
+            self.linger -= 1;
+            return true;
+        }
+        news
     }
 }
 
@@ -312,6 +360,37 @@ mod tests {
         assert!(input.ly > 0.99);
         session.command(&mut sim, Command::Pause(true));
         assert_eq!(session.input(&Pad::default()).buttons, 0);
+    }
+
+    #[test]
+    fn an_idle_guest_is_turned_when_there_is_a_reason() {
+        let mut sim = world();
+        let mut session = Session::new();
+        session.command(&mut sim, Command::Restart);
+        let mut pace = Pace::default();
+        // A guest with something scheduled takes every turn.
+        assert!(pace.due(&session, 0, false));
+        session.command(&mut sim, Command::Idle(true));
+        for _ in 0..LINGER {
+            assert!(pace.due(&session, 0, false));
+        }
+        assert!(!pace.due(&session, 0, false));
+        // In play the wires and the gas are not the guest's; START is.
+        assert!(!pace.due(&session, 0x4000 | 0x0100, false));
+        assert!(pace.due(&session, GUEST_START, false));
+        for _ in 0..=LINGER {
+            pace.due(&session, GUEST_START, false);
+        }
+        assert!(!pace.due(&session, GUEST_START, false));
+        // A list listens to every button; a finger always counts.
+        session.command(&mut sim, Command::Pause(true));
+        assert!(pace.due(&session, GUEST_START | 0x0040, false));
+        session.command(&mut sim, Command::Pause(false));
+        for _ in 0..=LINGER + 1 {
+            pace.due(&session, 0, false);
+        }
+        assert!(!pace.due(&session, 0, false));
+        assert!(pace.due(&session, 0, true));
     }
 
     #[test]

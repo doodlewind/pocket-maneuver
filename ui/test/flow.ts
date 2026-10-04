@@ -13,7 +13,7 @@ const touch = device === "ipod";
 /** The commands since the last call, without the touch panel's streams. */
 let read = 0;
 const asked = (): Command[] => {
-  const all = mock.log.slice(read).filter((command) => command.type !== "drive" && command.type !== "look");
+  const all = mock.log.slice(read).filter((command) => command.type !== "drive" && command.type !== "look" && command.type !== "idle");
   read = mock.log.length;
   return all;
 };
@@ -30,6 +30,17 @@ else rig.press(BTN.CIRCLE);
 rig.step(4);
 assert.deepEqual(asked(), [{ type: "start" }]);
 assert.equal(mock.state.mode, "play");
+// The hint is a timer pending; once it has left, nothing is scheduled.
+assert.equal(mock.idle, false);
+rig.step(400);
+assert.equal(mock.idle, true);
+mock.cut(0, 150);
+rig.step(2);
+assert.equal(mock.idle, false);
+rig.step(120);
+assert.equal(mock.idle, true);
+mock.state.alive = "1".repeat(32);
+mock.state.kills = 0;
 
 if (touch) {
   // A thumb on the stick and one on the gas: the stick forward, the gas held.

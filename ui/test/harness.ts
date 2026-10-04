@@ -28,6 +28,8 @@ export class Mock {
   /** Every command received, oldest first. */
   log: Command[] = [];
   drive = { mx: 0, my: 0, lx: 0, ly: 0, b: 0 };
+  /** The interface said it has nothing scheduled. */
+  idle = false;
   looked = { dx: 0, dy: 0 };
   private sent: Partial<HostState> = {};
 
@@ -49,6 +51,7 @@ export class Mock {
       case "drive": this.drive = { mx: command.mx, my: command.my, lx: command.lx, ly: command.ly, b: command.b }; break;
       case "look": this.looked = { dx: this.looked.dx + command.dx, dy: this.looked.dy + command.dy }; break;
       case "prefs": s.prefs = command.value; break;
+      case "idle": this.idle = command.on; break;
     }
   }
 

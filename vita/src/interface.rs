@@ -7,7 +7,7 @@
 
 use std::collections::VecDeque;
 
-use maneuver_interface::{channel, guest};
+use maneuver_interface::{channel, guest, Pace, Session};
 use pocketjs_vita::{input, Runtime};
 
 /// The guest turns this often, and is told so before it mounts.
@@ -26,6 +26,8 @@ pub struct Ui {
     owed: f32,
     /// Buttons seen since the last turn: a press shorter than a turn still reaches the guest.
     latched: u32,
+    /// Which of the turns it is offered are taken.
+    pace: Pace,
     /// Buttons a control message presses, each held two turns and let go for one.
     presses: VecDeque<(u32, u8)>,
     /// Why there is no interface, for the status report.
@@ -53,7 +55,7 @@ impl Ui {
             runtime.eval(&script)?;
             Ok(runtime)
         };
-        let mut ui = Self { runtime: None, owed: TURN, latched: 0, presses: VecDeque::new(), error: String::new() };
+        let mut ui = Self { runtime: None, owed: TURN, latched: 0, pace: Pace::default(), presses: VecDeque::new(), error: String::new() };
         match boot() {
             Ok(runtime) => ui.runtime = Some(runtime),
             Err(error) => ui.fail(error),
@@ -82,17 +84,25 @@ impl Ui {
 
     /// The guest's turn when `dt` more seconds make one due: the pad and the
     /// panel go in, the state is read and commands are left on the channel.
-    /// `quiet` withholds the panel (another layer has the screen).
+    /// `quiet` withholds the panel (another layer has the screen). With a `session` the turn is
+    /// taken only when it is worth its cost (`Pace`); without one (the world is loading) always.
     ///
     /// # Safety
     /// Render thread, outside any scene.
-    pub unsafe fn turn(&mut self, dt: f32, pad: &input::Pad, quiet: bool) {
+    pub unsafe fn turn(&mut self, dt: f32, pad: &input::Pad, quiet: bool, session: Option<&Session>) {
         self.latched |= pad.buttons;
         self.owed = (self.owed + dt).min(2.0 * TURN);
         if self.owed < TURN {
             return;
         }
         self.owed -= TURN;
+        let touches = if quiet { input::TouchSnapshot::EMPTY } else { input::read_touches() };
+        if let Some(session) = session {
+            if !self.pace.due(session, self.latched, !touches.packed().is_empty()) && self.presses.is_empty() {
+                self.latched = 0;
+                return;
+            }
+        }
         let Some(runtime) = &mut self.runtime else { return };
         let mut buttons = core::mem::take(&mut self.latched);
         if let Some((pressed, turns)) = self.presses.front_mut() {
@@ -103,7 +113,6 @@ impl Ui {
                 self.presses.pop_front();
             }
         }
-        let touches = if quiet { input::TouchSnapshot::EMPTY } else { input::read_touches() };
         if let Err(error) = runtime.frame_with_input(buttons as i32, pad.left_analog(), &touches) {
             self.fail(error);
             return;

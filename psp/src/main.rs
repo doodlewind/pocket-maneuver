@@ -90,9 +90,13 @@ unsafe fn start() {
         state.message.clear();
         state.message.push_str(e);
         let mut frames = 0u32;
+        // No game to pace the guest by: it takes every turn.
+        let waking = maneuver_interface::Session::new();
         loop {
             if on_screen {
-                ui.turn(interface::TURN, 0, interface::STICK_CENTER);
+                // A turn's two halves: its script, then its layout.
+                ui.turn(interface::TURN, 0, interface::STICK_CENTER, &waking);
+                ui.turn(0.0, 0, interface::STICK_CENTER, &waking);
                 gfx::interlude(&ui);
                 frames += 1;
                 // A test run (`boot.txt` names a frame to leave at) ends here, with this screen as its frame.
@@ -220,12 +224,15 @@ unsafe fn run(ui: &mut interface::Ui, on_screen: &mut bool) -> Result<(), &'stat
         gfx::init();
         *on_screen = true;
     }
+    // While the world loads the guest takes every turn it is offered.
+    let waking = maneuver_interface::Session::new();
     let mut stage = |name: &str| {
         if ui.up() {
             let state = &mut channel().state;
             state.message.clear();
             state.message.push_str(name);
-            ui.turn(interface::TURN, 0, interface::STICK_CENTER);
+            ui.turn(interface::TURN, 0, interface::STICK_CENTER, &waking);
+            ui.turn(0.0, 0, interface::STICK_CENTER, &waking);
             gfx::interlude(ui);
         } else {
             psp::dprintln!("  {}", name);
@@ -258,6 +265,8 @@ unsafe fn run(ui: &mut interface::Ui, on_screen: &mut bool) -> Result<(), &'stat
         *on_screen = true;
     }
     let mut game = Game::new(sim, scene);
+    // The numbers in flight ten times a second: each refresh is a turn of the guest, 4 to 6 ms here.
+    game.session.numbers_every = 6;
     game.set.stats = file.host;
     {
         // What the interface asked to have kept in an earlier run.
@@ -322,7 +331,10 @@ unsafe fn run(ui: &mut interface::Ui, on_screen: &mut bool) -> Result<(), &'stat
         // The interface's turn, while the GE draws the previous frame: the pad as PocketJS's hosts
         // pass it (the pad's own bits, the stick packed x then y).
         let tu = sceKernelGetSystemTimeLow();
-        ui.turn(ticks as f32 / 60.0, data.buttons.bits(), (data.lx as u32) << 8 | data.ly as u32);
+        // `option=16` withholds the turn, for measuring what it costs.
+        if game.set.option & 16 == 0 {
+            ui.turn(ticks as f32 / 60.0, data.buttons.bits(), (data.lx as u32) << 8 | data.ly as u32, &game.session);
+        }
         ui_ms = ui_ms * 0.9 + ms(tu) * 0.1;
         let ta = sceKernelGetSystemTimeLow();
         if sound && audio::running() && game.audible() {

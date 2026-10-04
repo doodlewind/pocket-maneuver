@@ -79,4 +79,9 @@ export type Command =
   | { type: "drive"; mx: number; my: number; lx: number; ly: number; b: number }
   /** A finger turning the view: logical px since the last command. */
   | { type: "look"; dx: number; dy: number }
-  | { type: "prefs"; value: string };
+  | { type: "prefs"; value: string }
+  /** The interface has nothing scheduled (no note standing, no hint fading).
+   *  A turn of the guest costs milliseconds on the slower machines, so while
+   *  this is on the renderer turns it only when it has news or a button the
+   *  interface listens to changes. */
+  | { type: "idle"; on: boolean };
