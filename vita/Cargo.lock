@@ -140,6 +140,7 @@ dependencies = [
  "maneuver-pack",
  "maneuver-sim",
  "pocket-vita-gxm",
+ "pocket3d-title",
  "pocketjs-vita",
  "serde_json",
  "sha2",
@@ -152,6 +153,13 @@ name = "pocket-vita-gxm"
 version = "0.1.0"
 dependencies = [
  "vita2d-sys",
+ "vitasdk-sys",
+]
+
+[[package]]
+name = "pocket3d-title"
+version = "0.1.0"
+dependencies = [
  "vitasdk-sys",
 ]
 
