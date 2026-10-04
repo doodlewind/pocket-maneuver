@@ -7,8 +7,8 @@ The player fires a wire from each hip into a wall or a roof, is pulled along it,
 | | Screen | Renderer | Measured |
 | --- | --- | --- | --- |
 | PS Vita | 960 × 544, 4× MSAA, bloom, light shafts, graded composite | GXM, programs compiled on the device | 90 s: 5 420 frames, **0 late**, up to 251 000 triangles |
-| Nintendo 3DS | 400 × 240, town map on the lower screen | PICA200 through citro3d | Old 3DS, 90 s: 5 416 frames, **69 late** (1.3 %), up to 54 500 triangles |
-| PSP | 480 × 272 | GE, fixed function | PPSSPP only; the console run is not measured yet |
+| Nintendo 3DS | 400 × 240, town map on the lower screen | PICA200 through citro3d | Old 3DS, 90 s: 5 417 frames, **3 late**, up to 54 800 triangles |
+| PSP | 480 × 272 | GE, fixed function | runs on the console; 37 fps before the CPU work below, not measured after it |
 
 The repository holds the whole path from authoring to hardware:
 
@@ -33,6 +33,7 @@ The generator writes each surface into render buckets (a cell and a layer) and i
 
 - **Wires**: a shoulder button searches a fan of 42 rays on its side for an anchor (distance near `24 + 0.55 × speed` metres, elevation near 30°) and fires a hook at 190 m/s. An attached wire is a rope that only shortens and pulls at 17 m/s²; with gas it pulls at 47 m/s². Past its length it stretches 5 % against a spring. A wire that meets a corner re-anchors there. The aimed pair fires both wires at the surface under the screen centre.
 - **Gas**: jumps from the ground, reels while a wire holds, and thrusts at 30 m/s² otherwise; a press in the air adds a 9 m/s burst. Gas returns at 2.5 units/s after 1.2 s without use, 10 units/s on the ground, and in full at a depot.
+- **Rays** walk a 16 m grid over the collision triangles. A cell whose triangles lie wholly above or below the ray's span in it is skipped, and a triangle is tested only if the ray meets its plane inside the cell: two dot products before the full intersection. An anchor search is 42 rays of up to 95 m; this halved the cost of a tick (29.4 to 13.9 µs on the host) with the same results over 180 000 ticks of autopilot.
 - **Contacts**: the centre is swept along its path, then pushed out of every triangle it touches, the giants' bodies included. A hit at more than 12 m/s turns the velocity along the surface and keeps from 100 % of the speed (grazing) down to 40 % (head-on).
 - **Camera**: third person, 5.2 m back at rest and 6.8 m at speed, field of view 62° to 80°, pulled in by a ray against the world. With no camera input for 0.55 s it turns to the direction of travel, which is how a machine with one stick steers it.
 - **Pose**: a **19-bone skeleton**. Key poses (stand, run, slide, air, fly, hang, reel, thrust) blend as quaternions; springs carry pitch, roll and drag; firing a wire swings that arm to the anchor; the legs are placed by two-bone IK on feet whose stride length follows the speed, so a foot stays where it lands. The cloak is a 7 × 8 cloth and each wire a 14-point rope, both integrated per tick.
@@ -112,7 +113,19 @@ The GE has no programmable stage, 2 MB of video memory, a 16-bit depth buffer, t
 
 `bun tools/psp.ts emu` runs the same PRX in PPSSPPHeadless with its software GE, which follows the console's clipping rule: with `option=4` (no CPU clipping) the ground under a low camera is missing there too. A street view draws about 25 000 triangles in 170 draws, an overview 16 000.
 
-Frame timing on the console is **not measured**: the PSPLINK session on the test console stopped serving storage requests during this work and needs a restart by hand. `bun tools/psp.ts run` and `bench` are the commands for it.
+On a PSP (2000 series or later, 333 MHz) the pack's resident part loads in **0.9 s** over PSPLINK and the program holds **18.5 MB**. The first run measured **25 to 28 ms a frame** with the governor at its floor: the GE waited (0.5 to 4.5 ms left of its work when the CPU came back to it) and the CPU was the limit.
+
+| Per frame | Measured | What was done after |
+| --- | --- | --- |
+| Simulation | 5.6–8.7 ms | the ray work above |
+| Sound | 1.7–3.5 ms | 11.025 kHz instead of 22.05 |
+| Detailed cells, with clip tests | 5.7–7.9 ms | depth along the view sorts a large triangle before any transform |
+| Interface | 2.2–2.9 ms | integer number formatting; statistics line every 20 frames |
+| Giants | 2.0–3.8 ms | far poses every third frame; lights from the encoding table |
+| Cloak, wires, discs | 0.6–1.8 ms | the sun ray every fourth tick |
+| Far meshes, mesh selection | 1.2–1.8 ms | |
+
+The frame time after that work is **not measured**: PSPLINK stopped answering when the tool reset it and sent the next command before the cable was back. `tools/psp.ts run` now waits for `usbhostfs_pc` to log a new connection.
 
 ## On the Nintendo 3DS
 
@@ -120,7 +133,7 @@ Frame timing on the console is **not measured**: the PSPLINK session on the test
 
 - **Fragment stage**: one texture environment stage (atlas texel × vertex colour, scaled by 2) and the PICA's fog table, filled with the reference's `1 − exp(−(depth × density)²)`.
 - **Runs of meshes in one draw**: every static vertex is on one position grid, so no draw needs its own transform. The compiler gives the meshes of a 4 × 4 block of cells a shared vertex base and lays their indices end to end; a run of adjacent visible meshes is one call. That took a frame from 250 draws to 60 and the command time from 7.5 ms to 3.0 ms.
-- **Skinning on the GPU**: 57 uniform rows; the square root stands in for the 1/2.2 power.
+- **Skinning on the GPU**: 57 uniform rows, two bones per vertex; a vertex stores each bone's first row, so the shader's address register takes it as it is. The square root stands in for the 1/2.2 power.
 - **The lower screen** shows the town from above (240 × 240, drawn by the compiler from the collision triangles), a mark for each giant, the player's position and heading, and the run in numbers. An update restores the patch under the player's last mark, a few hundred texels.
 - **Sound**: ndsp when the console has its DSP firmware dumped; otherwise a looping CSND buffer that the synthesizer writes ahead of the play position.
 - **The dev wire** is PocketJS's (`vendor/pocketjs/hosts/3ds`), compiled in: a `.3dsx` install replaces the running program, `maneuver.control` steers it, a screenshot request captures both screens.
@@ -129,9 +142,9 @@ Measured on an Old 3DS (268 MHz), autopilot flying the route (`bun tools/n3ds.ts
 
 | Window | Frames | Late frames | Average frame | Worst frame | Most triangles | Most draws | Longest GPU time |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 90 s | 5 416 | 69 (1.3 %) | 16.78 ms | 31.3 ms | 54 547 | 67 | 10.4 ms |
+| 90 s | 5 417 | 3 | 16.76 ms | 24.0 ms | 54 828 | 90 | 9.7 ms |
 
-CPU time per frame: simulation, sound and mesh selection 2.8–4.1 ms, commands and moving geometry 2.7–3.0 ms. The late frames are single frames spread over the run; the governor below did not act.
+CPU time per frame: simulation, sound and mesh selection 2–4 ms, commands and moving geometry 2.4–3.0 ms. Before the ray work in the simulation (see above) the same run had 69 late frames: the ticks that search for an anchor.
 
 ## Controls
 
@@ -200,7 +213,7 @@ Toolchains: VitaSDK and `cargo-vita`; rust-psp's `cargo psp` (PocketJS's pinned 
 
 ## Not done
 
-- **PSP frame timing on the console.** The build runs in PPSSPP; its triangle budget (about 16 000 to 25 000 per frame) is an estimate until `bun tools/psp.ts bench` has run on hardware.
+- **PSP at 60 fps.** The console ran at 37 fps before the CPU work listed above; whether that work reaches 16.7 ms has not been measured (`bun tools/psp.ts run`, then `bench`).
 - The 3DS's CSND sound path and the PSP's sound have not been heard by a person; the Vita's sound has been checked for level, not by ear.
 - The numbers come from the autopilot. Wire pull, gas economy, reach and camera rates are set from simulated runs and have not been tuned by hand on a console.
 - No stereoscopic 3D on the 3DS: a second eye doubles the 8 to 10 ms of GPU time per frame.
