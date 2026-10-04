@@ -31,7 +31,7 @@ pub struct PackFile {
     pub fd: SceUid,
     pub sections: Vec<Section>,
     pub bytes: u32,
-    /// Whether the pack came from the computer over PSPLINK.
+    /// Whether the computer's share is there (PSPLINK): the pack came from it, or it holds `maneuver/boot.txt`.
     pub host: bool,
 }
 
@@ -74,7 +74,12 @@ impl PackFile {
                 return Err("world.pack section table");
             }
             let sections = (0..n).map(|i| Section { tag: table[i * 4], offset: table[i * 4 + 1], size: table[i * 4 + 2] }).collect();
-            return Ok(PackFile { fd, sections, bytes, host });
+            // The mailbox is there when the computer's share has the game's directory, wherever the pack came from.
+            let probe = sceIoOpen(b"host0:/maneuver/boot.txt\0".as_ptr(), IoOpenFlags::RD_ONLY, 0);
+            if probe.0 >= 0 {
+                sceIoClose(probe);
+            }
+            return Ok(PackFile { fd, sections, bytes, host: host || probe.0 >= 0 });
         }
         Err("no world.pack beside the program or on host0:/maneuver")
     }

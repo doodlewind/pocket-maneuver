@@ -51,6 +51,8 @@ pub struct Settings {
     pub view: Option<(V3, V3, f32)>,
     /// A device-specific switch a remote sets, for experiments.
     pub option: i32,
+    /// Shrinks the middle and far distances while frames are late.
+    pub govern: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -121,6 +123,10 @@ pub struct Game {
     note: (String, f32),
     prev_buttons: u32,
     pub frame: u32,
+    /// The governor's factor on the middle and far distances, `LOD_FLOOR..=1`.
+    pub lod_scale: f32,
+    /// Frames and late frames in the governor's current window, and windows in a row without a late frame.
+    window: (u32, u32, u32),
     /// The controls, as this machine labels them.
     help: &'static str,
 }
@@ -128,8 +134,8 @@ pub struct Game {
 impl Game {
     pub fn new(sim: Sim, scene: Scene, help: &'static str) -> Game {
         let actors = Actors::new(&sim, &scene);
-        let set = Settings { auto: true, hud: true, stats: false, world: true, actors: true, lod_near: scene.h.lod_near, lod_mid: scene.h.lod_mid, lod_far: scene.h.lod_far, repeat: 1, view: None, option: 0 };
-        Game { sim, synth: Synth::new(), scene, actors, set, note: (String::new(), 0.0), prev_buttons: u32::MAX, frame: 0, help }
+        let set = Settings { auto: true, hud: true, stats: false, world: true, actors: true, lod_near: scene.h.lod_near, lod_mid: scene.h.lod_mid, lod_far: scene.h.lod_far, repeat: 1, view: None, option: 0, govern: true };
+        Game { sim, synth: Synth::new(), scene, actors, set, note: (String::new(), 0.0), prev_buttons: u32::MAX, frame: 0, lod_scale: 1.0, window: (0, 0, 0), help }
     }
 
     fn say(&mut self, text: &str, seconds: f32) {
@@ -178,7 +184,48 @@ impl Game {
         }
         self.note.1 -= ticks as f32 / 60.0;
         self.frame = self.frame.wrapping_add(1);
+        self.govern(ticks);
         events
+    }
+
+    /// The frame-rate governor. Over each second of frames: more than one late
+    /// frame in twenty pulls the middle and far distances in by 8 %; three
+    /// seconds in a row without a late frame let them out by 4 %. The near
+    /// distance stays, so what is beside the player does not change.
+    fn govern(&mut self, ticks: u32) {
+        const WINDOW: u32 = 60;
+        const LOD_FLOOR: f32 = 0.55;
+        if !self.set.govern {
+            self.lod_scale = 1.0;
+            self.window = (0, 0, 0);
+            return;
+        }
+        self.window.0 += 1;
+        if ticks > 1 {
+            self.window.1 += 1;
+        }
+        if self.window.0 < WINDOW {
+            return;
+        }
+        if self.window.1 * 20 > WINDOW {
+            self.lod_scale = max(self.lod_scale * 0.92, LOD_FLOOR);
+            self.window.2 = 0;
+        } else if self.window.1 == 0 {
+            self.window.2 += 1;
+            if self.window.2 >= 3 {
+                self.lod_scale = min(self.lod_scale * 1.04, 1.0);
+                self.window.2 = 0;
+            }
+        } else {
+            self.window.2 = 0;
+        }
+        self.window.0 = 0;
+        self.window.1 = 0;
+    }
+
+    /// This frame's near, middle and far distances.
+    pub fn lod(&self) -> (f32, f32, f32) {
+        (self.set.lod_near, max(self.set.lod_mid * self.lod_scale, self.set.lod_near), self.set.lod_far * self.lod_scale)
     }
 
     pub fn camera(&self) -> Camera {
@@ -217,7 +264,7 @@ impl Game {
     }
 
     /// Remote settings: `key=value` words separated by spaces.
-    /// `auto hud stats world actors` take 0 or 1; `lodNear lodMid lodFar repeat option` a number;
+    /// `auto hud stats world actors govern` take 0 or 1; `lodNear lodMid lodFar repeat option` a number;
     /// `reset=1` restarts; `view=px,py,pz,tx,ty,tz,fov` fixes the camera and `view=off` frees it.
     pub fn control(&mut self, text: &str) {
         for word in text.split_ascii_whitespace() {
@@ -235,6 +282,7 @@ impl Game {
                 "lodFar" => self.set.lod_far = num.unwrap_or(self.set.lod_far),
                 "repeat" => self.set.repeat = clamp(num.unwrap_or(1.0), 1.0, 8.0) as u32,
                 "option" => self.set.option = num.unwrap_or(0.0) as i32,
+                "govern" => self.set.govern = on,
                 "reset" if on => self.sim.reset(),
                 "view" => {
                     let mut f = [0.0f32; 7];
@@ -372,8 +420,8 @@ impl Game {
         );
         let _ = write!(
             out,
-            "\"settings\":{{\"auto\":{},\"hud\":{},\"stats\":{},\"world\":{},\"actors\":{},\"lodNear\":{:.1},\"lodMid\":{:.1},\"lodFar\":{:.1},\"repeat\":{},\"option\":{},\"fixedView\":{}}},",
-            self.set.auto, self.set.hud, self.set.stats, self.set.world, self.set.actors, self.set.lod_near, self.set.lod_mid, self.set.lod_far, self.set.repeat, self.set.option, self.set.view.is_some()
+            "\"settings\":{{\"auto\":{},\"hud\":{},\"stats\":{},\"world\":{},\"actors\":{},\"lodNear\":{:.1},\"lodMid\":{:.1},\"lodFar\":{:.1},\"repeat\":{},\"option\":{},\"fixedView\":{},\"govern\":{},\"lodScale\":{:.3}}},",
+            self.set.auto, self.set.hud, self.set.stats, self.set.world, self.set.actors, self.set.lod_near, self.set.lod_mid, self.set.lod_far, self.set.repeat, self.set.option, self.set.view.is_some(), self.set.govern, self.lod_scale
         );
         let _ = write!(
             out,
@@ -423,6 +471,31 @@ pub fn parse_f32(s: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_governor_pulls_in_when_frames_are_late_and_lets_out_when_they_are_not() {
+        let sim = maneuver_sim::worldfile::load(&maneuver_sim::testworld::build()).unwrap();
+        let scene = Scene::new(maneuver_pack::HandScene { lod_near: 40.0, lod_mid: 100.0, lod_far: 400.0, screen: [480.0, 272.0], ..Default::default() });
+        let mut g = Game::new(sim, scene, "");
+        // A second in which every fifth frame is late.
+        for i in 0..60 {
+            g.govern(if i % 5 == 0 { 2 } else { 1 });
+        }
+        assert!(g.lod_scale < 1.0);
+        let (near, mid, far) = g.lod();
+        assert_eq!(near, 40.0);
+        assert!(mid < 100.0 && mid >= near && far < 400.0);
+        // Many seconds on time: back to the pack's distances.
+        for _ in 0..60 * 3 * 4 {
+            g.govern(1);
+        }
+        assert_eq!(g.lod_scale, 1.0);
+        // The floor holds however late the frames are.
+        for _ in 0..60 * 40 {
+            g.govern(3);
+        }
+        assert!(g.lod_scale >= 0.55);
+    }
 
     #[test]
     fn numbers_parse() {

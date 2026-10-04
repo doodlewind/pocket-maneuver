@@ -212,29 +212,58 @@ static bool map_load(void) {
   return true;
 }
 
-/* The map, a mark for every giant and the player's position and heading. */
+/* The map, a mark for every giant and the player's position and heading.
+ * The giants only change when one is cut, so the map with their marks is kept
+ * (`map_marked`) and an update restores the patch under the player's last mark
+ * and draws the new one: a few hundred texels instead of 115 KiB. */
+static u16 *map_marked;
+static u32 map_kills = UINT32_MAX;
+static int map_px = -100, map_py = -100;
+#define MARK_REACH 10
+
 static void lower_map(void) {
+  if (!map_block)
+    return;
   MhMap map;
   static float giants[64 * 3];
   u32 n = mh_map(&map, giants, 64);
   u16 *fb = (u16 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
-  if (map_block) {
-    memcpy(fb, map_block, 240 * 240 * 2);
-    float k = 240.0f / (2.0f * map_extent);
+  float k = 240.0f / (2.0f * map_extent);
+  if (!map_marked)
+    map_marked = malloc(240 * 240 * 2);
+  if (!map_marked)
+    return;
+  int lo = 0, hi = 240;
+  if (map.kills != map_kills || map.ticks < 30) {
+    map_kills = map.kills;
+    memcpy(map_marked, map_block, 240 * 240 * 2);
     for (u32 i = 0; i < n; i++) {
       bool alive = giants[i * 3 + 2] > 0.5f;
-      dot(fb, (int)((giants[i * 3] + map_extent) * k), (int)((giants[i * 3 + 1] + map_extent) * k), 1, alive ? 0xF904 : 0x630C, 0x0000);
+      dot(map_marked, (int)((giants[i * 3] + map_extent) * k), (int)((giants[i * 3 + 1] + map_extent) * k), 1, alive ? 0xF904 : 0x630C, 0x0000);
     }
-    int px = (int)((map.player[0] + map_extent) * k), py = (int)((map.player[2] + map_extent) * k);
-    /* The heading: a short line from the mark. */
-    float dx = -sinf(map.yaw), dy = -cosf(map.yaw);
-    for (int t = 3; t <= 8; t++) {
-      plot(fb, px + (int)(dx * t), py + (int)(dy * t), 0xFFFF);
-      plot(fb, px + (int)(dx * t) + 1, py + (int)(dy * t), 0x0000);
-    }
-    dot(fb, px, py, 2, 0xFFE0, 0x0000);
-    GSPGPU_FlushDataCache(fb, 240 * 240 * 2);
+    memcpy(fb, map_marked, 240 * 240 * 2);
+  } else {
+    /* Restore the columns around the last mark. */
+    lo = map_px - MARK_REACH < 0 ? 0 : map_px - MARK_REACH;
+    hi = map_px + MARK_REACH + 1 > 240 ? 240 : map_px + MARK_REACH + 1;
+    if (lo < hi)
+      memcpy(fb + lo * 240, map_marked + lo * 240, (hi - lo) * 240 * 2);
   }
+  int px = (int)((map.player[0] + map_extent) * k), py = (int)((map.player[2] + map_extent) * k);
+  /* The heading: a short line from the mark. */
+  float dx = -sinf(map.yaw), dy = -cosf(map.yaw);
+  for (int t = 3; t <= 8; t++) {
+    plot(fb, px + (int)(dx * t), py + (int)(dy * t), 0xFFFF);
+    plot(fb, px + (int)(dx * t) + 1, py + (int)(dy * t), 0x0000);
+  }
+  dot(fb, px, py, 2, 0xFFE0, 0x0000);
+  map_px = px;
+  map_py = py;
+  int a = px - MARK_REACH < lo ? px - MARK_REACH : lo, b = px + MARK_REACH + 1 > hi ? px + MARK_REACH + 1 : hi;
+  a = a < 0 ? 0 : a;
+  b = b > 240 ? 240 : b;
+  if (a < b)
+    GSPGPU_FlushDataCache(fb + a * 240, (b - a) * 240 * 2);
 }
 
 /* Beside the map: the run in numbers, and the frame's. Console text is drawn

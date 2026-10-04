@@ -184,7 +184,8 @@ pub unsafe extern "C" fn mh_view(out: *mut MhView) {
     a.giants.clear();
     let set = &a.game.set;
     if set.world {
-        a.world.pick(&planes, cam.eye, set.lod_near, set.lod_mid, set.lod_far, &|_| true, &mut a.far, &mut a.near);
+        let (near, mid, far) = a.game.lod();
+        a.world.pick(&planes, cam.eye, near, mid, far, &|_| true, &mut a.far, &mut a.near);
     }
     // In the pack's order, meshes that share a vertex base are adjacent: the host merges them into runs.
     a.far.sort_unstable_by_key(|p| p.mesh);

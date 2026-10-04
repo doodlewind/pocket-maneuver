@@ -7,7 +7,7 @@ The player fires a wire from each hip into a wall or a roof, is pulled along it,
 | | Screen | Renderer | Measured |
 | --- | --- | --- | --- |
 | PS Vita | 960 × 544, 4× MSAA, bloom, light shafts, graded composite | GXM, programs compiled on the device | 90 s: 5 420 frames, **0 late**, up to 251 000 triangles |
-| Nintendo 3DS | 400 × 240, town map on the lower screen | PICA200 through citro3d | Old 3DS, 90 s: 5 389 frames, **67 late** (1.2 %), up to 54 500 triangles |
+| Nintendo 3DS | 400 × 240, town map on the lower screen | PICA200 through citro3d | Old 3DS, 90 s: 5 416 frames, **69 late** (1.3 %), up to 54 500 triangles |
 | PSP | 480 × 272 | GE, fixed function | PPSSPP only; the console run is not measured yet |
 
 The repository holds the whole path from authoring to hardware:
@@ -77,6 +77,12 @@ What differs by profile:
 | Extra | | detailed cells in a section read on demand; a clip distance per large triangle | meshes grouped on shared vertex bases; the town from above |
 | Pack | 30.7 MB | 25.6 MB (15.8 MB read at start) | 27.3 MB |
 
+## The handheld loop
+
+`crates/maneuver-handheld` is what the PSP and the 3DS share: which meshes a frame draws, the cloak, wires and soft discs as vertices, the interface as quads, the status record, and `Game::step` around the simulation.
+
+**The governor** counts late frames over each 60 frames. More than three pulls the middle and far distances in by 8 %; three windows in a row without one let them out by 4 %, between 55 % and 100 % of the profile's values. The near distance stays, so what is beside the player does not change. `govern=0` switches it off for a measurement.
+
 ## On the PS Vita
 
 - **One program for the world**: atlas texel × baked light, then haze. Haze is a function of view depth computed per vertex, and its colour is a constant in the shader source, so a draw uploads one matrix.
@@ -115,7 +121,7 @@ Frame timing on the console is **not measured**: the PSPLINK session on the test
 - **Fragment stage**: one texture environment stage (atlas texel × vertex colour, scaled by 2) and the PICA's fog table, filled with the reference's `1 − exp(−(depth × density)²)`.
 - **Runs of meshes in one draw**: every static vertex is on one position grid, so no draw needs its own transform. The compiler gives the meshes of a 4 × 4 block of cells a shared vertex base and lays their indices end to end; a run of adjacent visible meshes is one call. That took a frame from 250 draws to 60 and the command time from 7.5 ms to 3.0 ms.
 - **Skinning on the GPU**: 57 uniform rows; the square root stands in for the 1/2.2 power.
-- **The lower screen** shows the town from above (240 × 240, drawn by the compiler from the collision triangles), a mark for each giant, the player's position and heading, and the run in numbers.
+- **The lower screen** shows the town from above (240 × 240, drawn by the compiler from the collision triangles), a mark for each giant, the player's position and heading, and the run in numbers. An update restores the patch under the player's last mark, a few hundred texels.
 - **Sound**: ndsp when the console has its DSP firmware dumped; otherwise a looping CSND buffer that the synthesizer writes ahead of the play position.
 - **The dev wire** is PocketJS's (`vendor/pocketjs/hosts/3ds`), compiled in: a `.3dsx` install replaces the running program, `maneuver.control` steers it, a screenshot request captures both screens.
 
@@ -123,9 +129,9 @@ Measured on an Old 3DS (268 MHz), autopilot flying the route (`bun tools/n3ds.ts
 
 | Window | Frames | Late frames | Average frame | Worst frame | Most triangles | Most draws | Longest GPU time |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 90 s | 5 389 | 67 (1.2 %) | 16.74 ms | 35.2 ms | 54 547 | 66 | 10.3 ms |
+| 90 s | 5 416 | 69 (1.3 %) | 16.78 ms | 31.3 ms | 54 547 | 67 | 10.4 ms |
 
-CPU time per frame: simulation, sound and mesh selection 2.8–4.1 ms, commands and moving geometry 3.0 ms.
+CPU time per frame: simulation, sound and mesh selection 2.8–4.1 ms, commands and moving geometry 2.7–3.0 ms. The late frames are single frames spread over the run; the governor below did not act.
 
 ## Controls
 
@@ -161,7 +167,7 @@ bun tools/maneuver.ts vpk | push-vpk   # standalone PKMV00001 package; send it t
 # PSP (PSPLINK and usbhostfs_pc running)
 bun tools/psp.ts build | run | status | capture | bench --seconds 60 | package
 bun tools/psp.ts ctl "auto=0 view=6,2.2,300,0,4,200,62"
-bun tools/psp.ts emu --frames 240 [--ctl "…"] [--out f.png]     # PPSSPPHeadless
+bun tools/psp.ts emu --frames 240 [--ctl "…"] [--out f.png] [--standalone]   # PPSSPPHeadless
 
 # Nintendo 3DS (a Pocket Runtime .3dsx running and paired; installs are .3dsx)
 bun tools/n3ds.ts build | install | status | capture | bench --seconds 90
@@ -171,7 +177,7 @@ cargo test --workspace
 cargo run --release -p maneuver-sim --bin harness -- .pocket-build/world/ir/world.mvsw 600 [--wav out.wav]
 ```
 
-Vita `ctl` keys: `auto`, `reset`, `view {pos, target, fov}`, `lodNear`, `lodMid`, `repeat`, `profile`, `world`, `actors`, `hud`, `stats`, `cullCw`, `post {…}`, `fetch`. The handhelds take words: `auto hud stats world actors` (0 or 1), `lodNear lodMid lodFar repeat option` (a number), `reset=1`, `view=px,py,pz,tx,ty,tz,fov` and `view=off`.
+Vita `ctl` keys: `auto`, `reset`, `view {pos, target, fov}`, `lodNear`, `lodMid`, `repeat`, `profile`, `world`, `actors`, `hud`, `stats`, `cullCw`, `post {…}`, `fetch`. The handhelds take words: `auto hud stats world actors govern` (0 or 1), `lodNear lodMid lodFar repeat option` (a number), `reset=1`, `view=px,py,pz,tx,ty,tz,fov` and `view=off`.
 
 Toolchains: VitaSDK and `cargo-vita`; rust-psp's `cargo psp` (PocketJS's pinned SDK); devkitARM in PocketJS's pinned container for the 3DS C code, and `armv6k-nintendo-3ds` with `build-std` for its Rust core.
 

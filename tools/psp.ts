@@ -10,7 +10,7 @@
 //   bun tools/psp.ts capture [--out f.png]    # PSPLINK screenshot
 //   bun tools/psp.ts bench [--seconds 60]     # autopilot frame timings → .pocket-build/validation/psp/
 //   bun tools/psp.ts package                  # dist/psp/PSP/GAME/PocketManeuver for a Memory Stick
-//   bun tools/psp.ts emu [--frames 240] [--ctl "view=..."] [--out f.png]
+//   bun tools/psp.ts emu [--frames 240] [--ctl "view=..."] [--out f.png] [--standalone]
 //                                             # the same PRX in PPSSPPHeadless (software GE): a frame and its status
 //
 // One usbhostfs_pc owns the PSP's cable. If one is running (in any checkout),
@@ -231,7 +231,11 @@ switch (cmd) {
     if (!existsSync(headless)) throw new Error(`no PPSSPPHeadless at ${headless} (set PPSSPP_HEADLESS)`);
     const root = `${ROOT}/.pocket-build/psp/emu`;
     mkdirSync(`${root}/maneuver`, { recursive: true });
-    if (!existsSync(`${root}/maneuver/world.pack`) || sha(`${root}/maneuver/world.pack`) !== sha(PACK)) cpSync(PACK, `${root}/maneuver/world.pack`);
+    // `--standalone` puts the pack beside the EBOOT, as on a Memory Stick, instead of on the share.
+    const standalone = argv.includes("--standalone");
+    const packAt = standalone ? `${root}/world.pack` : `${root}/maneuver/world.pack`;
+    rmSync(standalone ? `${root}/maneuver/world.pack` : `${root}/world.pack`, { force: true });
+    if (!existsSync(packAt) || sha(packAt) !== sha(PACK)) cpSync(PACK, packAt);
     cpSync(`${OUT}/EBOOT.PBP`, `${root}/EBOOT.PBP`);
     const frames = Number(opt("--frames", "240"));
     for (const f of ["status.json", "shot.raw"]) rmSync(`${root}/maneuver/${f}`, { force: true });

@@ -458,7 +458,7 @@ impl Gfx {
         self.no_clip = game.set.option & 4 != 0;
         let cam = game.camera();
         let scene_h = game.scene.h;
-        let (lod_near, lod_mid, lod_far) = (game.set.lod_near, game.set.lod_mid, game.set.lod_far);
+        let (lod_near, lod_mid, lod_far) = game.lod();
         let aspect = game.aspect();
         let view = mat::view(cam.eye, cam.look, cam.roll);
         let vp = mat::mul(&mat::perspective(cam.fov, aspect, scene_h.clip_near, scene_h.clip_far), &view);
