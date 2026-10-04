@@ -8,7 +8,7 @@ The player fires a wire from each hip into a wall or a roof, is pulled along it,
 | --- | --- | --- | --- |
 | PS Vita | 960 × 544, 4× MSAA, bloom, light shafts, graded composite | GXM, programs compiled on the device | 90 s: 5 420 frames, **0 late**, up to 251 000 triangles |
 | Nintendo 3DS | 400 × 240, town map on the lower screen | PICA200 through citro3d | Old 3DS, 60 s: 3 652 frames, **8 late** (0.2 %), up to 52 600 triangles |
-| PSP | 480 × 272, 16-bit with dither | GE, fixed function | PSP 2000, 60 s: 3 540 frames, **64 late** (1.8 %), up to 23 500 triangles |
+| PSP | 480 × 272, 16-bit with dither | GE, fixed function | PSP 2000, 60 s: 3 510 frames, **93 late** (2.6 %), up to 22 300 triangles |
 
 The repository holds the whole path from authoring to hardware:
 
@@ -102,8 +102,9 @@ A presentation decides where things go and how large they are. What the gas gaug
 - **The split**: the renderer owns the simulation, the scene and the marks anchored to the world (where each wire would bite, the nearest target with its distance, the streaks of speed), which it batches itself from the pack's font. The interface owns the gauges, the lists, the map and, on a touch panel, the controls.
 - **The protocol** (`ui/app/protocol.ts`, `crates/maneuver-interface`) is JSON lines over PocketJS's `pocket.overlay` service, answered in the process: the QuickJS API on the Vita and the PSP, the `svcwire` symbols of PocketJS's C hosts on the 3DS. The renderer sends the members of its state that changed since the last line; the interface sends `start`, `pause`, `restart`, `title`, `option`, `prefs`, and from a touch panel `drive` (the stick and the held keys) and `look` (pixels a finger dragged).
 - **The flow** is `maneuver_interface::Session`, one implementation for every device: behind the title the autopilot flies the route; play takes the pad; a pause runs no tick and plays no sound; a finished run shows its time against the best one. With no guest on the screen (its files are missing, or it threw) START and SELECT keep the flow as before.
-- **The numbers in flight** (speed, gas, the clock, the player on the map, the wires that hold) travel as one array, `t`, at most once per guest turn. Each is written straight to its node (`@pocketjs/framework/hot`) in a cell of fixed size with the text at its left: one native call and no layout. A value set through a Solid signal costs milliseconds per update on the PSP.
-- **The guest turns 30 times a second** (two UI-core ticks per turn); buttons pressed between two turns are latched, so a press shorter than a turn still arrives. The scene keeps its own rate.
+- **The numbers in flight** (speed, gas, the clock, the player on the map, the wires that hold) travel as one array, `t`, refreshed 10 times a second on the PSP, 15 on the 3DS, 30 on the Vita. Each is written straight to its node (`@pocketjs/framework/hot`) in a cell of fixed size with the text at its left: one native call and no layout. A value set through a Solid signal costs milliseconds per update on the PSP.
+- **The guest is offered a turn 30 times a second** (two UI-core ticks per turn) and takes it when it is worth its cost (`maneuver_interface::Pace`). A turn runs the whole framework's frame, 4 to 6 ms on a PSP however little changed. The interface says when it has nothing scheduled (`idle`: no note standing, no hint fading); from then a turn is taken when the renderer has news, when a button the interface listens to changes (in play, START alone), while a finger is down, and for a few turns after any of those. Buttons pressed between two turns are latched, so a press shorter than a turn still arrives.
+- **Screens stay built.** The title, the gauges and the pause list are built while the world loads and then shown or hidden: a screen takes tenths of a second to build on the PSP, which the loading screen can spend and the moment play resumes cannot.
 - **The map** is the town from above, drawn by the world compiler from the collision triangles (`maneuver-cook --map`) and compiled into the app as an image; `tools/ui.ts` regenerates it when the exported world changes. Each giant is a mark that dims when it is cut; the player's mark moves and turns with `t`. The 3DS shows it on the lower screen during play; the other devices show it beside the pause list.
 - **A touch panel** gets a stick in the lower left, round keys in the lower right and the rest of the screen to turn the view. A wire key latches on a short tap and lets go on the next one, so one thumb keeps both wires and still reaches the gas.
 - **What is kept between runs** (the best time and the settings) is one JSON text the interface hands to the renderer, which stores it as `interface.json` and hands it back at the start.
@@ -138,18 +139,18 @@ The GE has no programmable stage, 2 MB of video memory, a 16-bit depth buffer, t
 - **Cells on demand**: the detailed meshes (9.7 MB) stay in the pack. A second thread, lower in priority than the frame's, reads a cell (at most 48 KiB) into one of 16 buffers when the eye comes within 70 m; it runs while the frame waits for the GE. Until a cell arrives, its simple mesh draws.
 - **The frame overlaps the GE**: a frame builds its display list while the GE draws the previous one, then waits for it and swaps on the display refresh.
 - **Memory**: PocketJS's arena is the allocator: one kernel block in power-of-two classes, which QuickJS's churn recycles in constant time. The world's buffers live for the whole run, so they take their exact size (`psp/src/mem.rs`): first as kernel blocks from the 2 MB the arena leaves the kernel, then from the arena's uncarved tail. The world holds about 18 MB.
-- **The interface** runs on PocketJS's PSP host library (QuickJS, the UI core, its GE backend) and takes about 4.3 MB beside the world, more while a list is up. The package asks for the larger user memory of the 2000 and later models (`MEMSIZE=1`: 54 MB free at the start in place of 20.6). On a PSP-1000 the world leaves 2.3 MB: the guest is not started, the run's numbers are drawn from the pack's font, and START and SELECT keep the flow. The guest's turn overlaps the GE's work on the previous frame; its draw is the last pass of the list.
+- **The interface** runs on PocketJS's PSP host library (QuickJS, the UI core, its GE backend) and takes about 4.3 MB beside the world, so the package asks for the larger user memory of the 2000 and later models (`MEMSIZE=1`: 53 MB free at the start). With 24 MB the guest is not started and the run's numbers are drawn from the pack's font. A turn is two halves on two frames, the script (4 to 6 ms) and then layout with the list of what it shows (2 to 2.7 ms), each beside the GE's work on the previous frame; its draw is the last pass of the list. In play the guest takes about 12 turns a second.
 - **Sound** at 11.025 kHz: the synthesizer costs about 3 µs a frame of sound on this CPU.
 
 `bun tools/psp.ts emu` runs the same PRX in PPSSPPHeadless with its software GE, which follows the console's clipping rule: with `option=4` (no CPU clipping) the ground under a low camera is missing there too.
 
-Measured on a PSP (2000 series, 333 MHz) over PSPLINK, autopilot flying the route (`bun tools/psp.ts bench --seconds 60`):
+Measured on a PSP (2000 series, 333 MHz) over PSPLINK, play flown by the autopilot (`bun tools/psp.ts bench --seconds 60`):
 
 | Window | Frames | Late frames | Average frame | Worst frame | Most triangles | Most draws |
 | --- | --- | --- | --- | --- | --- | --- |
-| 60 s | 3 540 | 64 (1.8 %) | 17.0 ms | 33.3 ms | 23 525 | 201 |
+| 60 s | 3 510 | 93 (2.6 %) | 17.1 ms | 33.4 ms | 22 285 | 193 |
 
-CPU time per frame: simulation 2.8 ms, sound 0.7 ms, display list 5.9 ms (of it the detailed cells with their clip tests 2.8 ms). The pack's resident part loads in 0.9 s.
+CPU time per frame: simulation 2.8 ms, sound 0.7 ms, display list 6.0 ms (of it the detailed cells with their clip tests 2.8 ms), the interface 1.3 ms. The pack's resident part loads in 0.9 s. Before the interface the same route had 64 late frames in 3 540 with the numbers drawn natively. With the guest's turn and its draw both withheld (`option=24`) a 45 s run has 37 late frames, with the turn alone 85, with the draw alone 47: the cost is the turn's CPU time, not the GE's.
 
 How it got there, from a first run at 25 to 28 ms a frame:
 
@@ -262,10 +263,9 @@ Toolchains: VitaSDK and `cargo-vita`; rust-psp's `cargo psp` (PocketJS's pinned 
 
 ## Not done
 
-- The interface has run in the emulators (PPSSPPHeadless, Azahar) and in the host preview rig. On the consoles its cost per frame, its look on the PSP's dithered 16-bit buffer and touch on the 3DS and the Vita are not measured yet.
-- A PSP-1000 has no interface: no title list, pause or settings there.
+- The interface is measured on the PSP. On the 3DS it has run in Azahar and on the Vita it only builds: its cost per frame there, and touch on both, are not measured yet.
 - The touch presentation runs in the preview rig and passes its flow test; no iPod touch runtime draws the game under it yet.
-- The PSP misses about one frame in fifty on the autopilot's route, in the densest streets.
+- The PSP misses about one frame in forty on the autopilot's route, in the densest streets.
 - The 3DS's CSND sound path and the PSP's sound have not been heard by a person; the Vita's sound has been checked for level, not by ear.
 - The numbers come from the autopilot. Wire pull, gas economy, reach and camera rates are set from simulated runs and have not been tuned by hand on a console.
 - No stereoscopic 3D on the 3DS: a second eye doubles the 8 to 10 ms of GPU time per frame.
