@@ -232,7 +232,8 @@ pub extern "C" fn mh_giants() -> *const Giant {
 #[no_mangle]
 pub unsafe extern "C" fn mh_giant_pose(index: u32, sink: f32, vis: f32, rows: *mut f32, light: *mut f32) {
     let a = app();
-    let skin = a.game.sim.titan_skin(index as usize);
+    let near = a.giants.iter().any(|g| g.index == index && g.level == 0);
+    let skin = *a.game.titan_skin(index as usize, near);
     actors::bone_rows(&skin, sink, &mut *(rows as *mut [f32; BONES * 12]));
     *(light as *mut [f32; 16]) = a.game.scene.light(vis);
 }
@@ -257,8 +258,9 @@ pub unsafe extern "C" fn mh_actors(ticks: u32, cloak: *mut ColorVertex, rope: *m
 #[no_mangle]
 pub unsafe extern "C" fn mh_hud(verts: *mut HudVertex, cap: u32, uv_scale: *const f32, uv_offset: *const f32, perf: *const Perf) -> u32 {
     let a = app();
+    a.game.measure(&*perf);
     let mut hud = Hud::new(&a.font, core::slice::from_raw_parts_mut(verts, cap as usize), [*uv_scale, *uv_scale.add(1)], [*uv_offset, *uv_offset.add(1)]);
-    a.game.draw_hud(&mut hud, &a.vp, &*perf);
+    a.game.draw_hud(&mut hud, &a.vp);
     hud.quads as u32
 }
 

@@ -160,12 +160,14 @@ pub struct Actors {
     next_puff: usize,
     /// Sun visibility at the character, eased.
     pub vis: f32,
+    /// Whether the last ray toward the sun was clear.
+    lit: bool,
 }
 
 impl Actors {
     pub fn new(sim: &Sim, scene: &Scene) -> Actors {
         let titan_vis = sim.dummies.iter().map(|d| if sim.world.raycast(d.pos + v3(0.0, d.height * 0.7, 0.0) + scene.sun_dir * (d.height * 0.3), scene.sun_dir, 500.0, mask::ALL).is_none() { 1.0 } else { 0.25 }).collect();
-        Actors { titan_vis, puffs: [Puff { pos: V3::ZERO, vel: V3::ZERO, age: 9.0, life: 0.7, size: 1.0 }; PUFFS], next_puff: 0, vis: 1.0 }
+        Actors { titan_vis, puffs: [Puff { pos: V3::ZERO, vel: V3::ZERO, age: 9.0, life: 0.7, size: 1.0 }; PUFFS], next_puff: 0, vis: 1.0, lit: true }
     }
 
     fn puff(&mut self, pos: V3, vel: V3, life: f32, size: f32) {
@@ -178,9 +180,11 @@ impl Actors {
     /// `rope` `ROPE_VERTS`, `disc` `DISC_VERTS`.
     pub fn update(&mut self, sim: &Sim, scene: &Scene, eye: V3, ticks: u32, cloak: &mut [ColorVertex], rope: &mut [ColorVertex], disc: &mut [ColorVertex]) -> Frame {
         let dt = ticks as f32 * maneuver_sim::sim::DT;
-        // The character darkens in shade: one ray toward the sun.
-        let lit = sim.world.raycast(sim.p.pos + v3(0.0, 0.6, 0.0), scene.sun_dir, 400.0, mask::ALL).is_none();
-        self.vis = ease(self.vis, if lit { 1.0 } else { 0.0 }, 10.0, max(dt, 1.0 / 60.0));
+        // The character darkens in shade: one ray toward the sun, every fourth tick; the easing covers the gap.
+        if sim.tick % 4 < ticks {
+            self.lit = sim.world.raycast(sim.p.pos + v3(0.0, 0.6, 0.0), scene.sun_dir, 400.0, mask::ALL).is_none();
+        }
+        self.vis = ease(self.vis, if self.lit { 1.0 } else { 0.0 }, 10.0, max(dt, 1.0 / 60.0));
 
         // Cloak: the simulation's cloth, lit on whichever side faces the sun.
         for i in 0..CLOAK_N {

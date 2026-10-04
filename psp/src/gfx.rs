@@ -45,6 +45,8 @@ pub const MAX_QUADS: usize = 320;
 const CLIP_CAP: usize = 1536;
 /// The far pass's share of the depth buffer.
 const DEPTH_SPLIT: i32 = 16384;
+/// The compiler's reach per metre of a large triangle's longest edge (`CLIP_REACH` in maneuver-cook).
+const CLIP_REACH: f32 = 3.3;
 
 fn vtype_world() -> VertexType {
     VertexType::TEXTURE_16BIT | VertexType::COLOR_5650 | VertexType::VERTEX_16BIT | VertexType::INDEX_16BIT | VertexType::TRANSFORM_3D
@@ -283,7 +285,8 @@ impl Gfx {
     }
 
     /// One static mesh: the GE draws what it can take; large triangles near the eye are tested and cut here.
-    unsafe fn mesh(&mut self, rec: &HandMesh, vtx: *const u8, idx: *const u16, eye: V3, guard: &Guard, u_range: f32, out: *mut ClipVertex, out_n: &mut usize) {
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn mesh(&mut self, rec: &HandMesh, vtx: *const u8, idx: *const u16, eye: V3, look: V3, guard: &Guard, u_range: f32, out: *mut ClipVertex, out_n: &mut usize) {
         let (s, t) = mat::dequant(&rec.min, &rec.max, 32768.0);
         let world = ScePspFMatrix4 {
             x: ScePspFVector4 { x: s[0], y: 0.0, z: 0.0, w: 0.0 },
@@ -333,6 +336,7 @@ impl Gfx {
             let (r, g, b) = ((c & 31) as u8, ((c >> 5) & 63) as u8, (c >> 11) as u8);
             ClipVertex { uv: [v.uv[0] as f32 * (u_range / 32768.0), v.uv[1] as f32 / 32768.0], color: [(r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2), 255], pos: [p.x, p.y, p.z] }
         };
+        let near = guard.near();
         let keep = sceGuGetMemory((tested * 6) as i32) as *mut u16;
         let mut kept = 0usize;
         let first = idx.add(rec.big_first as usize);
@@ -342,8 +346,26 @@ impl Gfx {
             let code = *codes.add(j);
             let pa = pos(a);
             let reach = code as f32 * 2.0;
-            let mut take = code != 255 && (pa - eye).len2() > reach * reach;
-            if !take {
+            let to = pa - eye;
+            let d2 = to.len2();
+            let mut take = code != 255 && d2 > reach * reach;
+            // Before three transforms: `edge` bounds the triangle's size, so depth along the view decides most.
+            // Wholly behind the near plane, it is not drawn; wholly inside a cone of 82 degrees about
+            // the view direction (the guard band is wider than that at every field of view the camera
+            // uses), the GE takes it.
+            let mut slow = !take;
+            if slow && code != 255 {
+                let edge = reach * (1.0 / CLIP_REACH);
+                let z = to.dot(look);
+                if z + edge < near {
+                    continue;
+                }
+                if z - edge > near && z - edge > 0.14 * (sqrt(d2) + edge) {
+                    take = true;
+                    slow = false;
+                }
+            }
+            if slow {
                 let (pb, pc) = (pos(b), pos(c));
                 let cc = [guard.to_clip(pa), guard.to_clip(pb), guard.to_clip(pc)];
                 match guard.classify(&cc) {
@@ -378,7 +400,8 @@ impl Gfx {
     }
 
     /// The meshes of one list, page by page, then the pieces the CPU cut.
-    unsafe fn meshes(&mut self, world: &World, near_list: bool, eye: V3, guard: &Guard, u_range: f32, frame: u32) {
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn meshes(&mut self, world: &World, near_list: bool, eye: V3, look: V3, guard: &Guard, u_range: f32, frame: u32) {
         for page in 0..self.pages.len() {
             let out = sceGuGetMemory((CLIP_CAP * core::mem::size_of::<ClipVertex>()) as i32) as *mut ClipVertex;
             let mut out_n = 0usize;
@@ -402,7 +425,7 @@ impl Gfx {
                     self.bind_page(page);
                     bound = true;
                 }
-                self.mesh(&rec, vtx, idx, eye, guard, u_range, out, &mut out_n);
+                self.mesh(&rec, vtx, idx, eye, look, guard, u_range, out, &mut out_n);
             }
             if out_n > 0 {
                 flush(out, out_n * core::mem::size_of::<ClipVertex>());
@@ -541,7 +564,7 @@ impl Gfx {
         let far_guard = Guard::new(&vp, far_near, 480.0, 272.0, 2048.0);
         world_state(true);
         for _ in 0..game.set.repeat {
-            self.meshes(world, false, cam.eye, &far_guard, scene_h.u_range, frame);
+            self.meshes(world, false, cam.eye, cam.look, &far_guard, scene_h.u_range, frame);
         }
         world_state(false);
         lap(1);
@@ -553,7 +576,7 @@ impl Gfx {
             if g.dist <= split {
                 continue;
             }
-            let skin = game.sim.titan_skin(g.index as usize);
+            let skin = *game.titan_skin(g.index as usize, g.level == 0);
             self.model((g.variant as usize, g.level as usize, false), &skin, g.sink, &game.scene.lights(g.vis));
         }
 
@@ -568,7 +591,7 @@ impl Gfx {
             if g.dist > split {
                 continue;
             }
-            let skin = game.sim.titan_skin(g.index as usize);
+            let skin = *game.titan_skin(g.index as usize, g.level == 0);
             self.model((g.variant as usize, g.level as usize, false), &skin, g.sink, &game.scene.lights(g.vis));
         }
         if show && game.set.actors {
@@ -581,7 +604,7 @@ impl Gfx {
         let near_guard = Guard::new(&vp, scene_h.clip_near, 480.0, 272.0, 2048.0);
         world_state(true);
         for _ in 0..game.set.repeat {
-            self.meshes(world, true, cam.eye, &near_guard, scene_h.u_range, frame);
+            self.meshes(world, true, cam.eye, cam.look, &near_guard, scene_h.u_range, frame);
         }
         world_state(false);
         sceGuDisable(GuState::Texture2D);
@@ -631,11 +654,12 @@ impl Gfx {
         sceGuTexWrap(GuTexWrapMode::Clamp, GuTexWrapMode::Clamp);
         let hv = sceGuGetMemory((MAX_QUADS * 4 * core::mem::size_of::<HudVertex>()) as i32) as *mut HudVertex;
         let quads = {
-            let mut hud = Hud::new(&self.font, core::slice::from_raw_parts_mut(hv, MAX_QUADS * 4), [1.0, 1.0], [0.0, 0.0]);
             let mut p = *perf;
             p.draws = self.stats.draws;
             p.tris = self.stats.tris;
-            game.draw_hud(&mut hud, &vp, &p);
+            game.measure(&p);
+            let mut hud = Hud::new(&self.font, core::slice::from_raw_parts_mut(hv, MAX_QUADS * 4), [1.0, 1.0], [0.0, 0.0]);
+            game.draw_hud(&mut hud, &vp);
             hud.quads
         };
         if quads > 0 {

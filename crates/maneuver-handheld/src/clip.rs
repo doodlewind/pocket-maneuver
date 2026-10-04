@@ -69,6 +69,11 @@ impl Guard {
         Guard { rows: [row(0), row(1), row(3)], near: near * 1.02, gx: band / (width * 0.5) * 0.9, gy: band / (height * 0.5) * 0.9 }
     }
 
+    /// The pass's near distance, with the margin `classify` uses.
+    pub fn near(&self) -> f32 {
+        self.near
+    }
+
     #[inline]
     pub fn to_clip(&self, p: V3) -> [f32; 3] {
         let r = &self.rows;

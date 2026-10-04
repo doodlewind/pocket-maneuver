@@ -4,7 +4,8 @@
 // measure it.
 //
 //   bun tools/psp.ts build                    # psp/ → dist/psp/{pocket-maneuver.prx,EBOOT.PBP}
-//   bun tools/psp.ts run [--no-build]         # build, stage, reset PSPLINK, start the PRX, wait for a frame
+//   bun tools/psp.ts serve                    # start usbhostfs_pc (detached, logged) when none is running
+//   bun tools/psp.ts run [--no-build]         # build, stage, reset PSPLINK, wait for it to reconnect, start the PRX
 //   bun tools/psp.ts status
 //   bun tools/psp.ts ctl "auto=1 stats=1"     # host0:/maneuver/control.txt (see Game::control)
 //   bun tools/psp.ts capture [--out f.png]    # PSPLINK screenshot
@@ -43,6 +44,14 @@ async function runningShare(): Promise<string | undefined> {
 }
 const share = resolve(opt("--share", process.env.MANEUVER_PSP_SHARE ?? (await runningShare()) ?? `${ROOT}/.pocket-build/psp/host0`));
 const app = `${share}/maneuver`;
+
+const HOST_LOG = `${ROOT}/.pocket-build/psp/usbhostfs.log`;
+
+/** How many times the usbhostfs_pc started by `serve` has connected to the PSP; undefined without its log. */
+function connections(): number | undefined {
+  if (!existsSync(HOST_LOG)) return undefined;
+  return (readFileSync(HOST_LOG, "utf8").match(/Connected to device/g) ?? []).length;
+}
 
 async function build() {
   // Loaded by path at run time: PocketJS's toolchain module resolves its manifest through its own tsconfig.
@@ -206,20 +215,40 @@ switch (cmd) {
     await device(async () => {
       stage();
       rmSync(`${app}/status.json`, { force: true });
-      // PSPLINK lists its own modules last; anything after USBHostFS is a loaded program, and only then is a reset needed.
-      const loaded = (await pspsh("modlist")).split("\n").filter((l) => l.includes("Name:")).map((l) => l.split("Name:")[1]!.trim());
-      if (loaded.at(-1) !== "USBHostFS" && loaded.at(-1) !== "PSPLINK") {
-        console.log(`psp: resetting PSPLINK (${loaded.at(-1)} is loaded)`);
-        await pspsh("reset");
-        await Bun.sleep(3000);
+      // A reset restarts PSPLINK from the Memory Stick and drops the cable for several seconds. A command sent
+      // before the cable is back leaves PSPLINK half reset (the shell answers, storage does not) until someone
+      // restarts it on the console. So: reset, then nothing until usbhostfs_pc logs a new connection.
+      const before = connections();
+      await pspsh("reset").catch(() => "");
+      if (before === undefined) {
+        console.log("psp: no usbhostfs_pc log (start the host with `bun tools/psp.ts serve`); waiting 15 s for PSPLINK");
+        await Bun.sleep(15000);
+      } else {
+        const end = Date.now() + 40000;
+        while ((connections() ?? 0) <= before) {
+          if (Date.now() > end) throw new Error("PSPLINK did not reconnect after the reset: restart PSPLINK on the console");
+          await Bun.sleep(250);
+        }
+        await Bun.sleep(1000);
       }
-      // A PSPLINK that answers the shell but not storage needs a restart on the console; loading would fail with "invalid file".
       if (!/world\.pack/.test(await pspsh("ls host0:/maneuver"))) throw new Error("PSPLINK does not serve host0: restart PSPLINK on the console");
       await pspsh("ldstart host0:/pocket-maneuver.prx");
       const s = await waitFor((s) => s.stage === "running", 180);
       console.log(JSON.stringify(s, null, 1));
     });
     break;
+  case "serve": {
+    // One usbhostfs_pc owns the cable. This one outlives the command and logs where `run` can count its connections.
+    if ((await $`pgrep -x usbhostfs_pc`.nothrow().quiet()).exitCode === 0) throw new Error("a usbhostfs_pc is already running; stop it first, or pass its directory with --share");
+    mkdirSync(share, { recursive: true });
+    mkdirSync(resolve(HOST_LOG, ".."), { recursive: true });
+    const { spawn } = await import("node:child_process");
+    const { openSync } = await import("node:fs");
+    const log = openSync(HOST_LOG, "w");
+    spawn("usbhostfs_pc", ["-b", port, share], { cwd: share, detached: true, stdio: ["ignore", log, log] }).unref();
+    console.log(`psp: usbhostfs_pc serves ${share} (log ${HOST_LOG})`);
+    break;
+  }
   case "status":
     console.log(JSON.stringify(readStatus(), null, 1));
     break;
@@ -269,6 +298,6 @@ switch (cmd) {
     break;
   }
   default:
-    console.log("usage: bun tools/psp.ts <build|run|status|ctl|capture|bench|package> [--share DIR] [--take]");
+    console.log("usage: bun tools/psp.ts <build|serve|run|status|ctl|capture|bench|emu|package> [--share DIR] [--take]");
     process.exit(cmd ? 1 : 0);
 }

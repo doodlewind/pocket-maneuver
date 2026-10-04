@@ -9,9 +9,10 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use psp::sys::*;
 use psp::Align16;
 
-/// Frames per second of the synthesizer and the output channel.
-pub const RATE: f32 = 22050.0;
-const BLOCK: usize = 512;
+/// Frames per second of the synthesizer and the output channel. Half the Vita's rate: the synthesizer
+/// costs about 3 µs a frame on this CPU.
+pub const RATE: f32 = 11025.0;
+const BLOCK: usize = 256;
 /// Frames in the ring (a power of two).
 const RING: usize = 4096;
 
@@ -34,7 +35,7 @@ pub fn running() -> bool {
 }
 
 unsafe extern "C" fn output(_: usize, _: *mut c_void) -> i32 {
-    if sceAudioSRCChReserve(BLOCK as i32, AudioOutputFrequency::Khz22_05, 2) < 0 {
+    if sceAudioSRCChReserve(BLOCK as i32, AudioOutputFrequency::Khz11_025, 2) < 0 {
         return 0;
     }
     RUNNING.store(1, Ordering::Relaxed);
@@ -59,7 +60,7 @@ unsafe extern "C" fn output(_: usize, _: *mut c_void) -> i32 {
 /// Frames the frame thread should render now to keep about three blocks queued.
 pub fn wanted() -> usize {
     let queued = WRITE.load(Ordering::Acquire).wrapping_sub(READ.load(Ordering::Acquire)) as usize;
-    (BLOCK * 3).saturating_sub(queued).min(1024)
+    (BLOCK * 3).saturating_sub(queued).min(512)
 }
 
 /// Queues interleaved stereo frames.

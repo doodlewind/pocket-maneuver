@@ -4,12 +4,15 @@
 
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt::Write;
 
 use maneuver_sim::audio::Synth;
 use maneuver_sim::math::*;
 use maneuver_sim::sim::{ev, tune, Input};
 use maneuver_sim::Sim;
+
+use maneuver_sim::pose::BONES;
 
 use crate::actors::Actors;
 use crate::hud::{rgba, Hud};
@@ -127,6 +130,10 @@ pub struct Game {
     pub lod_scale: f32,
     /// Frames and late frames in the governor's current window, and windows in a row without a late frame.
     window: (u32, u32, u32),
+    /// Each giant's skin matrices and the frame they were computed on.
+    skins: Vec<([M34; BONES], u32)>,
+    /// The statistics line, rebuilt a few times a second.
+    stats_line: String,
     /// The controls, as this machine labels them.
     help: &'static str,
 }
@@ -135,7 +142,8 @@ impl Game {
     pub fn new(sim: Sim, scene: Scene, help: &'static str) -> Game {
         let actors = Actors::new(&sim, &scene);
         let set = Settings { auto: true, hud: true, stats: false, world: true, actors: true, lod_near: scene.h.lod_near, lod_mid: scene.h.lod_mid, lod_far: scene.h.lod_far, repeat: 1, view: None, option: 0, govern: true };
-        Game { sim, synth: Synth::new(), scene, actors, set, note: (String::new(), 0.0), prev_buttons: u32::MAX, frame: 0, lod_scale: 1.0, window: (0, 0, 0), help }
+        let skins = (0..sim.dummies.len()).map(|i| (sim.titan_skin(i), 0)).collect();
+        Game { sim, synth: Synth::new(), scene, actors, set, note: (String::new(), 0.0), prev_buttons: u32::MAX, frame: 0, lod_scale: 1.0, window: (0, 0, 0), skins, stats_line: String::new(), help }
     }
 
     fn say(&mut self, text: &str, seconds: f32) {
@@ -171,7 +179,7 @@ impl Game {
             self.synth.control(&self.sim, self.sim.events);
         }
         if events & ev::SLASH_HIT != 0 {
-            let text = format!("CUT  {:.0} km/h", self.sim.run.last_cut_speed * 3.6);
+            let text = format!("CUT  {} km/h", F0(self.sim.run.last_cut_speed * 3.6));
             self.say(&text, 1.6);
         } else if events & ev::SLASH_WEAK != 0 {
             self.say("TOO SLOW", 1.0);
@@ -221,6 +229,37 @@ impl Game {
         }
         self.window.0 = 0;
         self.window.1 = 0;
+    }
+
+    /// Giant `i`'s skin matrices. A near giant's are computed every frame; a far one's every third
+    /// frame, in turn: a pose is 19 bones of trigonometry, and a standing giant sways slowly.
+    pub fn titan_skin(&mut self, i: usize, near: bool) -> &[M34; BONES] {
+        let due = near || (self.frame.wrapping_add(i as u32)) % 3 == 0 || self.frame.wrapping_sub(self.skins[i].1) > 3;
+        if due {
+            self.skins[i] = (self.sim.titan_skin(i), self.frame);
+        }
+        &self.skins[i].0
+    }
+
+    /// Hands the device's measurements in for the statistics line, which is rebuilt every 20 frames.
+    pub fn measure(&mut self, perf: &Perf) {
+        if !self.set.stats || self.frame % 20 != 0 {
+            return;
+        }
+        self.stats_line.clear();
+        let _ = write!(
+            self.stats_line,
+            "{} fps {} ms (worst {}) late {}  cpu {}+{}+{}  {} draws {}k tris",
+            F1(1000.0 / max(perf.frame, 0.1)),
+            F1(perf.frame),
+            F1(perf.worst),
+            perf.late,
+            F1(perf.sim),
+            F1(perf.build),
+            F1(perf.draw),
+            perf.draws,
+            F1(perf.tris as f32 / 1000.0)
+        );
     }
 
     /// This frame's near, middle and far distances.
@@ -301,7 +340,7 @@ impl Game {
     }
 
     /// The interface for this frame. `sizes` are the font's pixel sizes: small, medium, large.
-    pub fn draw_hud(&self, h: &mut Hud, vp: &Mat4, perf: &Perf) {
+    pub fn draw_hud(&self, h: &mut Hud, vp: &Mat4) {
         let sim = &self.sim;
         let (w, ht) = (self.scene.h.screen[0], self.scene.h.screen[1]);
         let (sx, sy) = (w / 960.0, ht / 544.0);
@@ -320,7 +359,7 @@ impl Game {
             let fill = if gas < 0.2 { rgba(255, 122, 60, 255) } else { rgba(233, 240, 244, 255) };
             h.rect(gx + 2.0, gy + 2.0, (gw - 4.0) * gas, gh - 4.0, fill);
             // Speed, bottom right.
-            h.text(large, 866.0 * sx, 510.0 * sy, 1.0, white, &format!("{:.0}", sim.speed() * 3.6));
+            h.text(large, 866.0 * sx, 510.0 * sy, 1.0, white, &format!("{}", F0(sim.speed() * 3.6)));
             h.text(small, 874.0 * sx, 510.0 * sy, 0.0, dim, "km/h");
             // Targets and time, top right.
             h.text(medium, 930.0 * sx, 44.0 * sy, 1.0, white, &format!("{} / {}", sim.run.kills, sim.dummies.len()));
@@ -383,13 +422,13 @@ impl Game {
                     };
                     let (x, y) = (libm::roundf(x), libm::roundf(y));
                     h.poly([(x, y - 5.0), (x + 5.0, y), (x, y + 5.0), (x - 5.0, y)], red);
-                    h.text(small, x, y + 8.0 + small as f32, 0.5, red, &format!("{:.0} m", dist));
+                    h.text(small, x, y + 8.0 + small as f32, 0.5, red, &format!("{} m", F0(dist)));
                 }
             }
             if sim.run.done {
                 let t = sim.run.ticks as f32 / 60.0;
                 h.text(large, w * 0.5, 250.0 * sy, 0.5, white, &clock(t));
-                h.text(small, w * 0.5, 250.0 * sy + small as f32 + 6.0, 0.5, dim, &format!("every target cut  -  top speed {:.0} km/h  -  SELECT starts again", sim.run.max_speed * 3.6));
+                h.text(small, w * 0.5, 250.0 * sy + small as f32 + 6.0, 0.5, dim, &format!("every target cut  -  top speed {} km/h  -  SELECT starts again", F0(sim.run.max_speed * 3.6)));
             }
             if self.note.1 > 0.0 {
                 let a = (min(self.note.1, 0.3) / 0.3 * 255.0) as u8;
@@ -405,8 +444,7 @@ impl Game {
             }
         }
         if self.set.stats {
-            let line = format!("{:.1} fps {:.1} ms (worst {:.1}) late {}  cpu {:.1}+{:.1}+{:.1}  {} draws {:.1}k tris", 1000.0 / max(perf.frame, 0.1), perf.frame, perf.worst, perf.late, perf.sim, perf.build, perf.draw, perf.draws, perf.tris as f32 / 1000.0);
-            h.text(small, 6.0, small as f32 + 2.0, 0.0, rgba(255, 255, 255, 220), &line);
+            h.text(small, 6.0, small as f32 + 2.0, 0.0, rgba(255, 255, 255, 220), &self.stats_line);
         }
     }
 
@@ -436,10 +474,28 @@ impl Game {
     }
 }
 
+/// A number rounded to a whole, formatted with integer arithmetic: the float formatter in `core`
+/// computes in 64 bits, which a machine without doubles does in software.
+struct F0(f32);
+impl core::fmt::Display for F0 {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(f, "{}", libm::roundf(self.0) as i32)
+    }
+}
+
+/// The same with one decimal.
+struct F1(f32);
+impl core::fmt::Display for F1 {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        let tenths = libm::roundf(self.0 * 10.0) as i32;
+        write!(f, "{}{}.{}", if tenths < 0 { "-" } else { "" }, tenths.abs() / 10, tenths.abs() % 10)
+    }
+}
+
 fn clock(t: f32) -> String {
-    let m = (t / 60.0) as u32;
-    let s = t - m as f32 * 60.0;
-    format!("{}:{}{:.1}", m, if s < 10.0 { "0" } else { "" }, s)
+    let tenths = (t * 10.0) as u32;
+    let (m, s, d) = (tenths / 600, tenths / 10 % 60, tenths % 10);
+    format!("{}:{}{}.{}", m, if s < 10 { "0" } else { "" }, s, d)
 }
 
 /// A decimal number: digits, an optional sign and one optional point.
@@ -509,5 +565,6 @@ mod tests {
     fn the_clock_pads_seconds() {
         assert_eq!(clock(65.25), "1:05.2");
         assert_eq!(clock(12.0), "0:12.0");
+        assert_eq!(format!("{} {} {}", F1(16.74), F1(-0.26), F0(181.6)), "16.7 -0.3 182");
     }
 }

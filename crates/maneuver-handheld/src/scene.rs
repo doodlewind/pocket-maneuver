@@ -72,6 +72,8 @@ impl Scene {
     pub fn lights(&self, vis: f32) -> Lights {
         let mut l = Lights { ambient: [0.0; 3], above: [0.0; 3], sun: [0.0; 3] };
         let sy = max(self.sun_dir.y, 0.0);
+        // The encoding table instead of three powers per colour: this runs for every model in a frame.
+        let enc = |x: f32| self.encode(x) as f32 * (1.0 / 255.0);
         for c in 0..3 {
             let side = enc(self.hemi(c, 0.5));
             let top = enc(self.hemi(c, 1.0));

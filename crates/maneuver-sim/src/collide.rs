@@ -70,15 +70,36 @@ pub struct World {
     nz: i32,
     start: Vec<u32>,
     items: Vec<u32>,
+    /// Lowest and highest point of each cell's triangles: a ray that passes over or under a cell skips it.
+    height: Vec<[f32; 2]>,
 }
 
 const CELL: f32 = 16.0;
+/// Slack on a ray's parameter and height when a cell or a plane is ruled out early, in metres.
+const SLACK: f32 = 0.02;
+
+/// Each cell's lowest and highest triangle point.
+fn heights(tris: &[Tri], start: &[u32], items: &[u32]) -> Vec<[f32; 2]> {
+    (0..start.len() - 1)
+        .map(|c| {
+            let mut h = [f32::MAX, f32::MIN];
+            for &ti in &items[start[c] as usize..start[c + 1] as usize] {
+                let t = &tris[ti as usize];
+                for y in [t.v0.y, t.v0.y + t.e1.y, t.v0.y + t.e2.y] {
+                    h[0] = min(h[0], y);
+                    h[1] = max(h[1], y);
+                }
+            }
+            h
+        })
+        .collect()
+}
 /// A contact still counts when the centre is this far behind the plane.
 const BACK: f32 = 0.3;
 
 impl World {
     pub fn empty() -> World {
-        World { tris: Vec::new(), cell: CELL, inv_cell: 1.0 / CELL, min_x: 0.0, min_z: 0.0, nx: 1, nz: 1, start: vec![0, 0], items: Vec::new() }
+        World { tris: Vec::new(), cell: CELL, inv_cell: 1.0 / CELL, min_x: 0.0, min_z: 0.0, nx: 1, nz: 1, start: vec![0, 0], items: Vec::new(), height: vec![[0.0, 0.0]] }
     }
 
     /// The grid as built: triangles, cell starts, cell items, then `min_x`, `min_z`, `nx`, `nz`.
@@ -98,7 +119,8 @@ impl World {
         if items.iter().any(|&i| i as usize >= tris.len()) {
             return Err("collision grid item out of range");
         }
-        Ok(World { tris, cell: CELL, inv_cell: 1.0 / CELL, min_x, min_z, nx, nz, start, items })
+        let height = heights(&tris, &start, &items);
+        Ok(World { tris, cell: CELL, inv_cell: 1.0 / CELL, min_x, min_z, nx, nz, start, items, height })
     }
 
     /// Builds the grid over `verts` (xyz) and `idx` (three per triangle).
@@ -171,10 +193,12 @@ impl World {
                 }
             }
         }
-        World { tris, cell: CELL, inv_cell: inv, min_x, min_z, nx, nz, start, items }
+        let height = heights(&tris, &start, &items);
+        World { tris, cell: CELL, inv_cell: inv, min_x, min_z, nx, nz, start, items, height }
     }
 
     #[inline]
+    #[allow(dead_code)]
     fn cell_items(&self, ix: i32, iz: i32) -> &[u32] {
         let c = (iz * self.nx + ix) as usize;
         &self.items[self.start[c] as usize..self.start[c + 1] as usize]
@@ -219,23 +243,45 @@ impl World {
 
         let mut best: Option<Hit> = None;
         let mut best_t = tmax;
+        // Where the ray enters the current cell.
+        let mut enter = t0;
         loop {
-            for &ti in self.cell_items(ix, iz) {
-                let tri = &self.tris[ti as usize];
-                if kinds & (1 << tri.kind) == 0 {
-                    continue;
-                }
-                if let Some((t, front)) = ray_tri(o, d, tri) {
-                    if t < best_t {
-                        best_t = t;
-                        best = Some(Hit { t, tri: ti, n: tri.n, kind: tri.kind, front });
+            let exit = min(tx, tz);
+            // The ray's height over this cell against the cell's triangles' heights.
+            let c = (iz * self.nx + ix) as usize;
+            let [low, high] = self.height[c];
+            let (ya, yb) = (o.y + d.y * enter, o.y + d.y * min(exit, best_t));
+            if max(ya, yb) >= low - SLACK && min(ya, yb) <= high + SLACK {
+                // A triangle listed here can only be the answer if the ray meets its plane inside this
+                // cell (it is listed again in the cell where it is met): two dot products decide that
+                // before the full test.
+                let (from, to) = (enter - SLACK, min(exit, best_t) + SLACK);
+                for &ti in &self.items[self.start[c] as usize..self.start[c + 1] as usize] {
+                    let tri = &self.tris[ti as usize];
+                    if kinds & (1 << tri.kind) == 0 {
+                        continue;
+                    }
+                    let denom = tri.n.dot(d);
+                    let dist = tri.n.dot(tri.v0 - o);
+                    if denom > 0.0 {
+                        if dist < from * denom || dist > to * denom {
+                            continue;
+                        }
+                    } else if denom < 0.0 && (dist > from * denom || dist < to * denom) {
+                        continue;
+                    }
+                    if let Some((t, front)) = ray_tri(o, d, tri) {
+                        if t < best_t {
+                            best_t = t;
+                            best = Some(Hit { t, tri: ti, n: tri.n, kind: tri.kind, front });
+                        }
                     }
                 }
             }
-            let exit = min(tx, tz);
             if best_t <= exit || exit > t1 {
                 break;
             }
+            enter = exit;
             if tx < tz {
                 ix += step_x;
                 tx += dx;
