@@ -1,4 +1,5 @@
-//! C interface of the 3DS host (`../src/core.h` declares the same functions).
+//! C interface of the 3DS host (`../src/core.h` declares the same functions),
+//! and of the iPod touch's: `ipod/core` builds this source for that device.
 //!
 //! The host owns the GPU, the pad, sound and storage; it hands the pack's
 //! tables in once and then asks, each frame, what to draw. The interface is a
@@ -289,7 +290,7 @@ pub unsafe extern "C" fn mh_status(out: *mut u8, cap: u32, perf: *const Perf, ex
     a.text.clear();
     let extra = core::str::from_utf8(core::slice::from_raw_parts(extra, extra_len as usize)).unwrap_or("");
     let mut text = core::mem::take(&mut a.text);
-    a.game.status(&mut text, "3ds", &*perf, extra);
+    a.game.status(&mut text, if cfg!(target_vendor = "apple") { "ipod" } else { "3ds" }, &*perf, extra);
     let n = text.len().min(cap as usize - 1);
     core::ptr::copy_nonoverlapping(text.as_ptr(), out, n);
     *out.add(n) = 0;

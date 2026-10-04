@@ -1,0 +1,34 @@
+# The simulation and the device-independent runtime behind a C interface, for
+# the iPod touch host in ../src. The source is the 3DS core's
+# (n3ds/core/src): both hosts are C over the same `mh_*` functions, declared
+# in n3ds/src/core.h.
+#
+# Standalone workspace: tools/ipod.ts builds it for PocketJS's
+# armv7-apple-ios target with a nightly compiler and build-std.
+
+[package]
+name = "maneuver-ipod-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "maneuver_ipod_core"
+path = "../../n3ds/core/src/lib.rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+# The Cortex-A8's VFP has a square root instruction; the transcendentals stay libm's.
+maneuver-sim = { path = "../../crates/maneuver-sim", default-features = false, features = ["hw-sqrt"] }
+maneuver-pack = { path = "../../crates/maneuver-pack", default-features = false }
+maneuver-handheld = { path = "../../crates/maneuver-handheld", default-features = false }
+# The interface's channel as the C symbols PocketJS's guest driver calls (svcwire.h).
+maneuver-interface = { path = "../../crates/maneuver-interface", default-features = false, features = ["wire"] }
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+codegen-units = 1
+lto = true
+
+[workspace]

@@ -24,11 +24,11 @@
 //! | `HSCN` | `HandScene`: scene constants and the pack's layout switches |
 //! | `TEX0` | `TexHeader`, then per atlas page (its palette, for an indexed format, and) its levels, largest first, each padded to 16 bytes |
 //! | `HMSH` | `HandMesh` table |
-//! | `VTX0` | resident vertices (`PspVertex` or `PicaVertex`) |
+//! | `VTX0` | resident vertices (`PspVertex`; `PicaVertex` on the 3DS and the iPod touch) |
 //! | `IDX0` | resident `u16` indices |
 //! | `NEAR` | PSP: per 64 m cell, the vertices then the indices of its detailed meshes, read on demand |
 //! | `CLIP` | PSP: per mesh, its large triangles' groups (`ClipGroup`) and one byte per large triangle, the distance (× 2 m) inside which the CPU clips it |
-//! | `MODL` | skinned models: `SkinVertex` models (3DS) or bone-batched `PspSkinVertex` models (PSP) |
+//! | `MODL` | skinned models: `SkinVertex` models (3DS, iPod touch) or bone-batched `PspSkinVertex` models (PSP) |
 //! | `FONT` | `FontHeader`, `Glyph` table, then the glyph atlas as a 16-bit device texture |
 //! | `SIMG` | the simulation's world in built form (`maneuver_sim::worldfile::Built`) |
 //! | `MAPT` | 3DS: the town from above, `TexHeader` and one level |
@@ -134,6 +134,10 @@ pub mod tex_format {
     pub const PICA_RGBA4: u32 = 6;
     /// 8-bit indices, swizzled. Each page starts with its palette: 256 colours, `r, g, b, 255` bytes.
     pub const PSP_T8: u32 = 7;
+    /// 16-bit `r << 11 | g << 5 | b` in row order, the image's first row first (OpenGL ES `UNSIGNED_SHORT_5_6_5`).
+    pub const GLES_RGB565: u32 = 8;
+    /// 16-bit `r << 12 | g << 8 | b << 4 | a` in row order (OpenGL ES `UNSIGNED_SHORT_4_4_4_4`).
+    pub const GLES_RGBA4: u32 = 9;
     /// Bytes of a `PSP_T8` page's palette.
     pub const PALETTE_BYTES: usize = 1024;
 

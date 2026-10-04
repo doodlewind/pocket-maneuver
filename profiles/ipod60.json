@@ -1,0 +1,17 @@
+{
+  "name": "ipod60",
+  "target": "ipod",
+  "presentation": { "render": [480, 320], "display": [480, 320], "targetFps": 60 },
+  "texture": { "format": "gles-rgb565", "maxMips": 7 },
+  "bake": { "sunRays": 4, "sunSpread": 0.02, "aoRays": 16, "aoReach": 14.0 },
+  "limits": { "maxMeshVertices": 65535, "maxPackBytes": 31457280 },
+  "font": { "sizes": [10, 13, 20], "atlas": [256, 256] },
+  "handheld": {
+    "page": [512, 512],
+    "lod": { "near": 64, "mid": 150, "far": 1000 },
+    "fog": { "near": 120, "far": 1500, "density": 0.0012 },
+    "clip": { "near": 0.35, "far": 4200 },
+    "titan": { "near": 50, "far": 300, "max": 6 },
+    "models": { "scout": 2, "titanNear": [30, 31, 32], "titanFar": [40, 41, 42] }
+  }
+}
