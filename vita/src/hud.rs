@@ -84,6 +84,20 @@ impl Hud {
         self.quads += 1;
     }
 
+    /// A solid quad through four corners, in order around it.
+    pub fn poly(&mut self, p: [(f32, f32); 4], color: [u8; 4]) {
+        if self.quads >= MAX_QUADS || self.verts.is_null() {
+            return;
+        }
+        unsafe {
+            let v = self.verts.add(self.quads * 4);
+            for (i, (x, y)) in p.into_iter().enumerate() {
+                *v.add(i) = Vertex { pos: [x, y], uv: self.solid, color };
+            }
+        }
+        self.quads += 1;
+    }
+
     pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [u8; 4]) {
         let [u, v] = self.solid;
         unsafe { self.quad(x, y, x + w, y + h, u, v, u, v, color) }

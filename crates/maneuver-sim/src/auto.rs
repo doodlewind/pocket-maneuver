@@ -16,11 +16,13 @@ pub struct Auto {
     mark: V3,
     mark_tick: u32,
     stuck: u32,
+    /// Set when the autopilot gives up on where it is; `tick` then puts the player on the route.
+    pub rescue: bool,
 }
 
 impl Auto {
     pub fn new() -> Auto {
-        Auto { wp: 0, laps: 0, hold: [0; 2], cool: 0, side: 0, prev: 0, mark: V3::ZERO, mark_tick: 0, stuck: 0 }
+        Auto { wp: 0, laps: 0, hold: [0; 2], cool: 0, side: 0, prev: 0, mark: V3::ZERO, mark_tick: 0, stuck: 0, rescue: false }
     }
 }
 
@@ -43,20 +45,40 @@ impl Sim {
             }
             tgt = self.waypoints[a.wp];
         }
+        // A standing target near the route takes over from the waypoint: fly through its nape.
+        let along = heading(yaw_of(tgt - p.pos));
+        let mut hunting = false;
+        let mut best = 90.0f32;
+        for d in self.dummies.iter().filter(|d| d.alive) {
+            let rel = d.nape - p.pos;
+            let dist = rel.len();
+            if dist < best && rel.flat().norm().dot(along) > 0.35 {
+                best = dist;
+                tgt = d.nape;
+                hunting = true;
+            }
+        }
         let to = tgt - p.pos;
         let want_yaw = yaw_of(to);
         let err = wrap_angle(want_yaw - self.cam.yaw);
         // The stick response is squared; take the root so the turn rate is proportional to the error.
         let rx = clamp(-err * 2.4, -1.0, 1.0);
         out.rx = if rx < 0.0 { -sqrt(-rx) } else { sqrt(rx) };
-        let ry = clamp((0.14 - self.cam.pitch) * 3.0, -1.0, 1.0);
+        // Look along the climb to a target; otherwise a little above the horizon.
+        let want_pitch = if hunting { clamp(atan2(to.y, to.flat().len()), -0.5, 0.7) } else { 0.14 };
+        let ry = clamp((want_pitch - self.cam.pitch) * 3.0, -1.0, 1.0);
         out.ry = if ry < 0.0 { -sqrt(-ry) } else { sqrt(ry) };
         out.ly = 1.0;
 
         let speed = self.speed();
         let alt = p.pos.y - tgt.y;
         let mut b = 0u32;
-        if p.grounded {
+        // An aimed pair of wires onto the target once the camera has it: the way a player closes in.
+        let aim = self.reticle[2];
+        let zip_now = hunting && to.len() > 5.0 && ((a.prev & btn::ZIP != 0 && (p.hooks[0].out() || p.hooks[1].out())) || (to.len() < 80.0 && aim.valid && (aim.point - tgt).len() < 4.0));
+        if zip_now {
+            b |= btn::ZIP;
+        } else if p.grounded {
             if a.prev & btn::GAS == 0 {
                 b |= btn::GAS;
             }
@@ -100,11 +122,13 @@ impl Sim {
                     a.side ^= 1;
                 }
             }
+            // Gas while there is some to spare; the wires alone carry the rest.
+            let spare = p.gas > 22.0 || (a.prev & btn::GAS != 0 && p.gas > 4.0);
             if any_att {
-                if speed < 30.0 || alt < -3.0 {
+                if spare && (speed < 30.0 || alt < -3.0) {
                     b |= btn::GAS;
                 }
-            } else if alt < -8.0 || speed < 8.0 {
+            } else if spare && (alt < -8.0 || speed < 8.0) {
                 b |= btn::GAS;
             }
         }
@@ -123,8 +147,9 @@ impl Sim {
                 if a.stuck >= 2 {
                     a.wp = (a.wp + 1) % n;
                 }
-                if a.stuck >= 5 {
-                    b |= btn::RESET;
+                if a.stuck >= 3 {
+                    // Boxed in: start again from the next waypoint, with a full tank.
+                    a.rescue = true;
                     a.stuck = 0;
                 }
             } else {

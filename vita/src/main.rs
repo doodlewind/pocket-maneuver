@@ -55,6 +55,9 @@ extern "C" {
     fn sceDisplayGetVcount() -> i32;
 }
 
+/// Samples per pixel of the display surface.
+const DEFAULT_MSAA: u64 = 4;
+
 /// ARM, bus, GPU and GPU crossbar clocks (MHz) the frame budget assumes.
 const CLOCKS: [i32; 4] = [444, 222, 222, 166];
 
@@ -133,6 +136,26 @@ unsafe fn read_pack(font: *mut g::vita2d_pgf, dev: &mut dev::Host, frame: &mut u
     Err(format!("no world pack ({last})"))
 }
 
+/// Copies `host0:maneuver/outbox/<name>` to `ux0:data/pocket-maneuver/` (a packaged build to
+/// install from VitaShell) and records the result next to the source as `<name>.done`.
+fn fetch(name: &str) {
+    let result = (|| -> Result<u64, String> {
+        if name.is_empty() || name.contains(['/', '\\', ':']) || name.contains("..") {
+            return Err(format!("refusing file name {name:?}"));
+        }
+        let _ = std::fs::create_dir_all(paths::DATA);
+        let mut src = std::fs::File::open(format!("{}/outbox/{name}", paths::HOST)).map_err(|e| e.to_string())?;
+        let to = format!("{}/{name}", paths::DATA);
+        let mut dst = std::fs::File::create(&to).map_err(|e| format!("{to}: {e}"))?;
+        std::io::copy(&mut src, &mut dst).map_err(|e| e.to_string())
+    })();
+    let text = match result {
+        Ok(n) => format!("ok {n} {}/{name}", paths::DATA),
+        Err(e) => format!("error {e}"),
+    };
+    let _ = hostfs::write(&format!("{}/outbox/{name}.done", paths::HOST), text.as_bytes());
+}
+
 /// Remote control: `host0:maneuver/control.json`, polled off the render thread.
 fn control_watcher() -> mpsc::Receiver<Value> {
     let (tx, rx) = mpsc::channel();
@@ -146,6 +169,9 @@ fn control_watcher() -> mpsc::Receiver<Value> {
                 if bytes != last {
                     last = bytes.clone();
                     if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
+                        if let Some(name) = v["fetch"].as_str() {
+                            fetch(name);
+                        }
                         if tx.send(v).is_err() {
                             return;
                         }
@@ -168,6 +194,8 @@ struct Settings {
     lod_mid: f32,
     world: bool,
     actors: bool,
+    /// Draws the world this many times, to find how much GPU time is left.
+    repeat: u32,
     /// A fixed camera: eye, target, vertical field of view.
     view: Option<(V3, V3, f32)>,
 }
@@ -187,6 +215,9 @@ fn apply_control(v: &Value, s: &mut Settings, sim: &mut Sim) {
     if let Some(x) = v["lodMid"].as_f64() {
         s.lod_mid = x as f32;
     }
+    if let Some(x) = v["repeat"].as_u64() {
+        s.repeat = (x as u32).clamp(1, 8);
+    }
     if v["reset"].as_bool() == Some(true) {
         sim.reset();
     }
@@ -199,7 +230,7 @@ fn apply_control(v: &Value, s: &mut Settings, sim: &mut Sim) {
 
 fn pad_input(pad: &input::Pad) -> Input {
     let mut b = 0;
-    for (bit, to) in [(P_L, btn::HOOK_L), (P_R, btn::HOOK_R), (P_CROSS, btn::GAS), (P_SQUARE, btn::SLASH), (P_TRIANGLE, btn::ZIP), (P_CIRCLE, btn::DROP), (P_SELECT, btn::RESET)] {
+    for (bit, to) in [(P_L, btn::HOOK_L), (P_R, btn::HOOK_R), (P_CROSS, btn::GAS), (P_SQUARE, btn::SLASH), (P_TRIANGLE, btn::ZIP), (P_CIRCLE, btn::DROP)] {
         if pad.buttons & bit != 0 {
             b |= to;
         }
@@ -236,6 +267,18 @@ impl Timing {
 
 fn main() {
     unsafe {
+        // Development builds take boot switches from the USB share: {"msaa": 0 | 2 | 4}.
+        let live = cfg!(feature = "usb-debug");
+        let boot: Value = if live { hostfs::read(&format!("{}/boot.json", paths::HOST), 4096).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null) } else { Value::Null };
+        let samples = boot["msaa"].as_u64().unwrap_or(DEFAULT_MSAA);
+        let msaa = match samples {
+            4 => g::SceGxmMultisampleMode_SCE_GXM_MULTISAMPLE_4X,
+            2 => g::SceGxmMultisampleMode_SCE_GXM_MULTISAMPLE_2X,
+            _ => g::SceGxmMultisampleMode_SCE_GXM_MULTISAMPLE_NONE,
+        };
+        // vita2d owns the display surface; asking for it multisampled before PocketJS's
+        // graphics module initializes makes every scene on it multisampled.
+        g::vita2d_init_advanced_with_msaa(1024 * 1024, msaa);
         if let Err(error) = graphics::init_with_pool(1024 * 1024) {
             pocketjs_vita::vita_log(format_args!("maneuver: graphics {error}"));
             return;
@@ -244,7 +287,6 @@ fn main() {
         input::init();
         let mut dev = dev::Host::new();
         let font = g::vita2d_load_default_pgf();
-        let live = cfg!(feature = "usb-debug");
         let mut frame_no = 0u32;
         let fail = |font, dev: &mut dev::Host, frame_no: &mut u32, e: String| -> ! {
             pocketjs_vita::vita_log(format_args!("maneuver: {e}"));
@@ -268,7 +310,7 @@ fn main() {
             let scene = Scene::from_meta(&meta);
 
             loading(font, &mut dev, &mut frame_no, &["Preparing programs".into()]);
-            let mut gpu = Gpu::new(live)?;
+            let mut gpu = Gpu::new(live, msaa as u32)?;
             let fog = scene.fog_srgb();
             let defines = format!(
                 "#define FOG_COLOR half3({:.5}, {:.5}, {:.5})\n#define FOG_DENSITY {:.7}\n#define UV_SCALE {:.1}\n#define COLOR_SCALE {:.1}\n",
@@ -308,7 +350,12 @@ fn main() {
         };
         let mut fence = Fence::new(0, 2);
         let control = if live { control_watcher() } else { mpsc::channel().1 };
-        let mut set = Settings { auto: true, hud: true, stats: live, cull_cw: true, profile: false, lod_near: scene.lod_near, lod_mid: scene.lod_mid, world: true, actors: true, view: None };
+        let mut set = Settings { auto: true, hud: true, stats: live, cull_cw: true, profile: false, lod_near: scene.lod_near, lod_mid: scene.lod_mid, world: true, actors: true, repeat: 1, view: None };
+
+        // Sound: the synthesizer renders at 22.05 kHz; the host module doubles it for the port.
+        let mut synth = maneuver_sim::audio::Synth::new();
+        let sound = pocketjs_vita::audio::start(22050);
+        let mut pcm = vec![0i16; 2048];
 
         let ctx = g::vita2d_get_context();
         let mut timing = Timing { ms: [16.7; Timing::N], at: 0, late: 0, frames: 0 };
@@ -331,12 +378,17 @@ fn main() {
             while let Ok(v) = control.try_recv() {
                 apply_control(&v, &mut set, &mut sim);
             }
+            if pressed & P_SELECT != 0 && frame_no > 30 {
+                sim.reset();
+                set.auto = false;
+                note = ("RESTART".into(), 1.2);
+            }
             if pressed & P_START != 0 {
                 set.auto = !set.auto;
                 note = (if set.auto { "AUTOPILOT".into() } else { "MANUAL".into() }, 1.5);
             }
             // Any deliberate input takes over from the autopilot.
-            if set.auto && buttons & (P_L | P_R | P_CROSS | P_SQUARE | P_TRIANGLE) != 0 && prev_buttons != u32::MAX {
+            if set.auto && pressed & (P_L | P_R | P_CROSS | P_SQUARE | P_TRIANGLE) != 0 && frame_no > 30 {
                 set.auto = false;
                 note = ("MANUAL".into(), 1.5);
             }
@@ -351,6 +403,7 @@ fn main() {
                 let inp = if set.auto { sim.auto_input() } else if dev.menu.visible { Input::default() } else { pad_input(&input::Pad { buttons, ..pad }) };
                 sim.tick(inp);
                 events |= sim.events;
+                synth.control(&sim, sim.events);
             }
             sim_ms = sim_ms * 0.9 + t0.elapsed().as_secs_f32() * 100.0;
 
@@ -364,6 +417,16 @@ fn main() {
             }
             if events & ev::RUN_DONE != 0 {
                 note = ("ALL TARGETS CUT".into(), 5.0);
+            }
+
+            // Keep about three output blocks queued (1536 frames at 22.05 kHz, 70 ms).
+            if sound {
+                let queued = 32 * 1024 - pocketjs_vita::audio::free_frames();
+                let want = 1536usize.saturating_sub(queued).min(1024);
+                if want > 0 {
+                    synth.render(&mut pcm[..want * 2], 22050.0);
+                    pocketjs_vita::audio::push(&pcm[..want * 2], 2);
+                }
             }
 
             // -------------------------------------------------------------- camera
@@ -409,10 +472,14 @@ fn main() {
                 world_prog.bind(ctx, false);
                 gpu::state_opaque(ctx, set.cull_cw);
                 g::sceGxmSetFragmentTexture(ctx, 0, &world.atlas.gxm);
-                wstats = world.draw(ctx, &world_prog, &vp, eye, set.lod_near, set.lod_mid);
+                for _ in 0..set.repeat {
+                    wstats = world.draw(ctx, &world_prog, &vp, eye, set.lod_near, set.lod_mid);
+                }
             }
             if let (Some(f), true) = (&aframe, set.actors) {
-                actor_stats = actors.draw_opaque(ctx, &color_prog, &vp, f, scene.fog_density, set.cull_cw);
+                // Inside the camera's near range the character would fill the frame.
+                let show = set.view.is_some() || (sim.cam.pos - sim.p.pos).len() > 1.7;
+                actor_stats = actors.draw_opaque(ctx, &color_prog, &vp, f, scene.fog_density, set.cull_cw, show);
                 actors.draw_blend(ctx, &color_prog, &vp, f, scene.fog_density);
             }
             hud.flush(ctx, &hud_prog, actors.quad_ib);
@@ -452,9 +519,10 @@ fn main() {
                     "gpuMs": if set.profile { json!(gpu_ms) } else { Value::Null },
                     "world": {"draws": wstats.draws, "tris": wstats.tris, "near": wstats.near, "mid": wstats.mid, "far": wstats.far},
                     "actors": {"draws": actor_stats.0, "tris": actor_stats.1},
-                    "settings": {"auto": set.auto, "lodNear": set.lod_near, "lodMid": set.lod_mid, "cullCw": set.cull_cw, "profile": set.profile, "world": set.world, "actors": set.actors},
+                    "settings": {"auto": set.auto, "lodNear": set.lod_near, "lodMid": set.lod_mid, "cullCw": set.cull_cw, "profile": set.profile, "world": set.world, "actors": set.actors, "repeat": set.repeat},
                     "player": {"pos": [sim.p.pos.x, sim.p.pos.y, sim.p.pos.z], "speed": sim.speed(), "gas": sim.p.gas, "tick": sim.tick, "kills": sim.run.kills, "laps": sim.auto.laps, "waypoint": sim.auto.wp},
                     "programs": {"compiled": gpu.compiled, "cached": gpu.cached},
+                    "msaa": samples,
                     "memory": {"geometry": world.bytes, "vram": vram.reserved()},
                     "clockMhz": [scePowerGetArmClockFrequency(), scePowerGetGpuClockFrequency()],
                 });
@@ -502,11 +570,64 @@ fn draw_hud(h: &mut Hud, sim: &Sim, vp: &mat::Mat4, note: &(String, f32), auto: 
             }
         }
     }
+    // Streaks from the rim toward the centre at speed.
+    let fast = smoothstep(24.0, 60.0, sim.speed());
+    if fast > 0.0 && !fixed_view {
+        for i in 0..18u32 {
+            let seed = i.wrapping_mul(2654435761).wrapping_add((sim.tick / 3).wrapping_mul(40503));
+            let a = (seed % 6283) as f32 / 1000.0;
+            let r0 = 300.0 + ((seed >> 8) % 160) as f32;
+            let len = (40.0 + ((seed >> 16) % 90) as f32) * (0.5 + fast);
+            let (c, s) = (cos(a), sin(a) * 0.62);
+            let (x0, y0) = (480.0 + c * r0, 272.0 + s * r0);
+            let (x1, y1) = (480.0 + c * (r0 + len), 272.0 + s * (r0 + len));
+            let (nx, ny) = (-s * 1.2, c * 1.2);
+            h.poly([(x0, y0), (x1 - nx, y1 - ny), (x1 + nx, y1 + ny), (x0, y0)], rgba(255, 255, 255, (fast * 70.0) as u8));
+        }
+    }
+    // The nearest standing target: a marker on it, or at the rim of the screen toward it.
+    if !fixed_view {
+        let mut best: Option<(f32, V3)> = None;
+        for d in sim.dummies.iter().filter(|d| d.alive) {
+            let dist = (d.nape - sim.p.pos).len();
+            if best.map_or(true, |b| dist < b.0) {
+                best = Some((dist, d.nape));
+            }
+        }
+        if let Some((dist, nape)) = best {
+            let red = rgba(255, 96, 72, 235);
+            let on = mat::project(vp, nape).filter(|(x, y)| (24.0..936.0).contains(x) && (24.0..520.0).contains(y));
+            let (x, y) = match on {
+                Some(p) => p,
+                None => {
+                    // Off screen: toward it, from the centre, clamped to an ellipse inside the frame.
+                    let to = nape - sim.cam.pos;
+                    let right = sim.cam.look.cross(V3::UP).norm_or(v3(1.0, 0.0, 0.0));
+                    let up = right.cross(sim.cam.look);
+                    let (dx, dy) = (to.dot(right), to.dot(up));
+                    let l = sqrt(dx * dx + dy * dy).max(1e-3);
+                    (480.0 + dx / l * 420.0, 272.0 - dy / l * 230.0)
+                }
+            };
+            h.poly([(x, y - 9.0), (x + 9.0, y), (x, y + 9.0), (x - 9.0, y)], red);
+            h.text(18, x, y + 28.0, 0.5, red, &format!("{:.0} m", dist));
+        }
+    }
+    if sim.run.done {
+        let t = sim.run.ticks as f32 / 60.0;
+        h.text(44, 480.0, 250.0, 0.5, white, &format!("{}:{:04.1}", (t / 60.0) as u32, t % 60.0));
+        h.text(18, 480.0, 280.0, 0.5, dim, &format!("every target cut  -  top speed {:.0} km/h  -  SELECT starts again", sim.run.max_speed * 3.6));
+    }
     if note.1 > 0.0 {
         let a = (note.1.min(0.3) / 0.3 * 255.0) as u8;
         h.text(26, 480.0, 132.0, 0.5, rgba(244, 241, 232, a), &note.0);
     }
     if auto {
+        if sim.tick < 420 {
+            let a = (smoothstep(420.0, 300.0, sim.tick as f32) * 255.0) as u8;
+            h.text(44, 480.0, 210.0, 0.5, rgba(244, 241, 232, a), "POCKET MANEUVER");
+            h.text(18, 480.0, 240.0, 0.5, rgba(244, 241, 232, a), "L / R  wires     X  gas     SQUARE  cut     TRIANGLE  aimed wires     CIRCLE  let go");
+        }
         h.text(18, 480.0, 528.0, 0.5, dim, "AUTOPILOT  -  press a button to take over");
     }
 }

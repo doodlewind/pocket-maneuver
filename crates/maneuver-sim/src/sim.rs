@@ -119,7 +119,7 @@ pub mod tune {
 
     pub const SLASH_TIME: f32 = 0.34;
     pub const SLASH_COOLDOWN: f32 = 0.5;
-    pub const SLASH_REACH: f32 = 3.4;
+    pub const SLASH_REACH: f32 = 4.2;
     /// A cut needs this much speed.
     pub const CUT_SPEED: f32 = 9.0;
 
@@ -821,6 +821,14 @@ impl Sim {
 
     pub fn tick(&mut self, input: Input) {
         self.events = 0;
+        if self.auto.rescue && !self.waypoints.is_empty() {
+            self.auto.rescue = false;
+            let n = self.waypoints.len();
+            let at = self.waypoints[self.auto.wp % n];
+            let next = self.waypoints[(self.auto.wp + 1) % n];
+            self.respawn(at + v3(0.0, 4.0, 0.0), yaw_of(next - at));
+            self.p.gas = GAS_MAX;
+        }
         let pressed = input.buttons & !self.prev_buttons;
         let released = !input.buttons & self.prev_buttons;
         self.prev_buttons = input.buttons;

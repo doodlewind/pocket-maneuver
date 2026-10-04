@@ -64,10 +64,13 @@ export class Actors {
   /** Applies a snapshot. `dummies` holds, per target, alive and ticks since its cut. */
   update(s: Float32Array, dummies: Float32Array, dt: number) {
     const e = new THREE.Matrix4();
+    const tooClose = Math.hypot(s[SNAP.CAM_POS] - s[SNAP.POS], s[SNAP.CAM_POS + 1] - s[SNAP.POS + 1], s[SNAP.CAM_POS + 2] - s[SNAP.POS + 2]) < 1.7;
     for (let i = 0; i < PARTS; i++) {
       const o = SNAP.PARTS_AT + i * 12;
       e.set(s[o], s[o + 3], s[o + 6], s[o + 9], s[o + 1], s[o + 4], s[o + 7], s[o + 10], s[o + 2], s[o + 5], s[o + 8], s[o + 11], 0, 0, 0, 1);
       this.parts[i].matrix.copy(e);
+      // Inside the camera's near range the character would fill the frame.
+      this.parts[i].visible = !tooClose;
     }
     // Wires: hip to hook tip while a hook is out.
     const w = this.wirePos;

@@ -5,6 +5,7 @@
 //! wasm host uses; native hosts use `Sim` directly.
 
 pub mod abi;
+pub mod audio;
 pub mod auto;
 pub mod collide;
 pub mod math;
