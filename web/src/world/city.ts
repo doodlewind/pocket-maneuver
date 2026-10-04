@@ -694,12 +694,17 @@ function backdrop(w: World) {
 // ---------------------------------------------------------------------------- targets and the route
 
 function dummyAt(p: V3, yaw: number, height: number): Entities["dummies"][number] {
-  // The nape sits at the back of the neck; the target faces along `yaw`.
-  const back: V3 = [Math.sin(yaw), 0, Math.cos(yaw)];
-  return { pos: p, yaw, height, nape: [p[0] + back[0] * height * 0.1, p[1] + height * 0.84, p[2] + back[2] * height * 0.1] };
+  return { pos: p, yaw, height, nape: p };
 }
 
-function targets(w: World, plan: Plan, rng: Rng, ent: Entities) {
+/** A stand-in nape for the world file; the simulation places the real one from the giant's build and stance. */
+function napes(ent: Entities) {
+  ent.dummies.forEach((d) => {
+    d.nape = [d.pos[0], d.pos[1] + d.height * 0.8, d.pos[2]];
+  });
+}
+
+function targets(rng: Rng, ent: Entities) {
   // Along the avenues and the ring streets, facing down the street.
   const rings = [108, 172, 238, 372, 438, 504, 568];
   for (let i = 0; i < 26; i++) {
@@ -717,17 +722,7 @@ function targets(w: World, plan: Plan, rng: Rng, ent: Entities) {
       p = polar(r, a);
       yaw = Math.atan2(Math.sin(a), -Math.cos(a)) + (rng.chance(0.5) ? Math.PI : 0);
     }
-    ent.dummies.push(dummyAt(p, yaw, rng.pick([8, 9, 10, 12, 15])));
-  }
-  void plan;
-  // Collision: a post for each target, so wires hold on it.
-  for (const d of ent.dummies) {
-    const f = frame([d.pos[0], d.pos[1], d.pos[2]], [-Math.sin(d.yaw), 0, -Math.cos(d.yaw)]);
-    const wd = d.height * 0.34;
-    const o = at(f, -wd / 2, 0, d.height * 0.06);
-    const pts = [o, at(f, -wd / 2, 0, -d.height * 0.06), at(f, wd / 2, 0, -d.height * 0.06), at(f, wd / 2, 0, d.height * 0.06)];
-    const n = pts.length;
-    for (let i = 0; i < n; i++) w.col.quad(pts[(i + 1) % n], pts[i], up(pts[i], d.height), up(pts[(i + 1) % n], d.height), KIND.WOOD);
+    ent.dummies.push(dummyAt(p, yaw, rng.pick([10, 11, 12, 14, 16])));
   }
 }
 
@@ -803,7 +798,8 @@ export function generate(seed: number): Generated {
   forest(w, rng.fork(4), ent);
   farms(w, rng.fork(5));
   backdrop(w);
-  targets(w, plan, rng.fork(6), ent);
+  targets(rng.fork(6), ent);
+  napes(ent);
   route(ent);
   return { world: w, entities: ent, plan };
 }

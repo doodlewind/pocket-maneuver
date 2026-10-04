@@ -12,12 +12,12 @@
 //! | `MESH` | `MeshRec` table |
 //! | `VTX0` | `Vertex` records of every static mesh |
 //! | `IDX0` | `u16` indices, relative to each mesh's first vertex |
-//! | `MODL` | moving models: count, then per model `ModelHeader`, `ModelVertex` records, `u16` indices padded to 4 bytes |
+//! | `MODL` | skinned models: count, then per model `ModelHeader`, `SkinVertex` records, `u16` indices padded to 4 bytes |
 //! | `FONT` | interface glyphs: `FontHeader`, `Glyph` table, 8-bit coverage |
 //! | `SIMW` | the simulation's world file, unchanged |
 
 pub const MAGIC: u32 = u32::from_le_bytes(*b"MVPK");
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 pub const fn tag(t: &[u8; 4]) -> u32 {
     u32::from_le_bytes(*t)
@@ -90,20 +90,23 @@ pub struct TexHeader {
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct ModelHeader {
-    /// 0..12: the character's parts; 100: target body; 101: target nape.
+    /// 0: the player; 10 to 12: the giants' builds; 20 to 22: the same, coarse.
     pub id: u32,
     pub vtx_count: u32,
     pub idx_count: u32,
     pub pad: u32,
 }
 
-/// Moving-model vertex, 28 bytes: position, normal, sRGB tint.
+/// Skinned vertex, 24 bytes: bind-pose position, normal `i8 × 3` normalized,
+/// sRGB tint, two bone indices and their weights (`u8` normalized, summing to 255).
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
-pub struct ModelVertex {
+pub struct SkinVertex {
     pub pos: [f32; 3],
-    pub normal: [f32; 3],
+    pub normal: [i8; 4],
     pub color: [u8; 4],
+    pub bones: [u8; 2],
+    pub weights: [u8; 2],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -216,7 +219,7 @@ mod tests {
     fn layouts() {
         assert_eq!(core::mem::size_of::<Vertex>(), 16);
         assert_eq!(core::mem::size_of::<MeshRec>(), 56);
-        assert_eq!(core::mem::size_of::<ModelVertex>(), 28);
+        assert_eq!(core::mem::size_of::<SkinVertex>(), 24);
         assert_eq!(core::mem::size_of::<Glyph>(), 20);
     }
 

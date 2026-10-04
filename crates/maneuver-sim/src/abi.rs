@@ -4,10 +4,10 @@
 //! binary prints them as TypeScript so the reference never hand-copies one.
 
 use crate::math::*;
-use crate::pose::PARTS;
+use crate::pose::{BONES, CLOAK_N, ROPE_N};
 use crate::sim::{Input, Sim};
 
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 macro_rules! layout {
     ($( $name:ident : $n:expr ),* $(,)?) => {
@@ -25,7 +25,7 @@ macro_rules! layout {
 }
 
 pub mod snap {
-    use super::PARTS;
+    use super::{BONES, CLOAK_N, ROPE_N};
     layout! {
         TICK: 1, POS: 3, VEL: 3, SPEED: 1, FACING: 1, GROUNDED: 1, GAS: 1, ACT: 1, ACT_T: 1, SLASH_T: 1,
         HOOK_L_STATE: 1, HOOK_L_TIP: 3, HOOK_L_ANCHOR: 3,
@@ -36,7 +36,11 @@ pub mod snap {
         RUN_STARTED: 1, RUN_DONE: 1, RUN_TICKS: 1, RUN_KILLS: 1, RUN_TOTAL: 1, RUN_MAX_SPEED: 1, LAST_CUT: 1, LAST_CUT_SPEED: 1,
         EVENTS: 1, THRUST: 1, REEL: 1, WALL_RUN: 1, AUTO_WP: 1, AUTO_LAPS: 1,
         BLADE_L: 3, BLADE_R: 3,
-        PARTS_AT: PARTS * 12,
+        // Skin matrices (three columns of rotation, then translation), cloak points with normals, wire points.
+        SKIN: BONES * 12,
+        CLOAK: CLOAK_N * 6,
+        ROPE_L: ROPE_N * 3,
+        ROPE_R: ROPE_N * 3,
     }
 }
 
@@ -66,8 +70,8 @@ impl Sim {
             put(out, tip, p.hooks[i].tip);
             put(out, anchor, p.hooks[i].anchor);
         }
-        put(out, HIP_L, self.hip(0));
-        put(out, HIP_R, self.hip(1));
+        put(out, HIP_L, self.pose.hip[0]);
+        put(out, HIP_R, self.pose.hip[1]);
         put(out, CAM_POS, self.cam.pos);
         put(out, CAM_LOOK, self.cam.look);
         out[CAM_FOV] = self.cam.fov;
@@ -95,13 +99,27 @@ impl Sim {
         out[AUTO_LAPS] = self.auto.laps as f32;
         put(out, BLADE_L, self.pose.blade[0]);
         put(out, BLADE_R, self.pose.blade[1]);
-        for (i, m) in self.pose.parts.iter().enumerate() {
-            let at = PARTS_AT + i * 12;
-            put(out, at, m.r.x);
-            put(out, at + 3, m.r.y);
-            put(out, at + 6, m.r.z);
-            put(out, at + 9, m.t);
+        put_skin(&mut out[SKIN..SKIN + BONES * 12], &self.pose.skin);
+        for i in 0..CLOAK_N {
+            put(out, CLOAK + i * 6, self.pose.cloak.p[i]);
+            put(out, CLOAK + i * 6 + 3, self.pose.cloak.n[i]);
         }
+        for (at, rope) in [(ROPE_L, &self.pose.ropes[0]), (ROPE_R, &self.pose.ropes[1])] {
+            for i in 0..ROPE_N {
+                put(out, at + i * 3, rope.p[i]);
+            }
+        }
+    }
+}
+
+/// Twelve floats per bone: the rotation's three columns, then the translation.
+pub fn put_skin(out: &mut [f32], skin: &[M34; BONES]) {
+    for (i, m) in skin.iter().enumerate() {
+        let at = i * 12;
+        put(out, at, m.r.x);
+        put(out, at + 3, m.r.y);
+        put(out, at + 6, m.r.z);
+        put(out, at + 9, m.t);
     }
 }
 
@@ -111,6 +129,7 @@ static mut SIM: Option<Sim> = None;
 static mut SNAP: [f32; snap::LEN] = [0.0; snap::LEN];
 static mut DUMMIES: Vec<f32> = Vec::new();
 static mut RAY: [f32; 5] = [0.0; 5];
+static mut MATS: [f32; BONES * 12] = [0.0; BONES * 12];
 static mut SYNTH: Option<crate::audio::Synth> = None;
 static mut PCM: [i16; 8192] = [0; 8192];
 
@@ -244,6 +263,31 @@ pub extern "C" fn mv_raycast(ox: f32, oy: f32, oz: f32, dx: f32, dy: f32, dz: f3
             h.t
         }
         None => -1.0,
+    }
+}
+
+/// Skin matrices of giant `i` at the current tick (`BONES × 12` floats).
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub extern "C" fn mv_titan(i: u32) -> *const f32 {
+    unsafe {
+        if let Some(s) = SIM.as_ref() {
+            if (i as usize) < s.dummies.len() {
+                put_skin(&mut MATS, &s.titan_skin(i as usize));
+            }
+        }
+        MATS.as_ptr()
+    }
+}
+
+/// Bind-pose bone transforms models are built on: kind 0 is the player, 1 to 3 the giants (unit height).
+#[no_mangle]
+#[allow(static_mut_refs)]
+pub extern "C" fn mv_bind(kind: u32) -> *const f32 {
+    let skel = if kind == 0 { crate::pose::Skeleton::human() } else { crate::pose::Skeleton::titan(kind - 1) };
+    unsafe {
+        put_skin(&mut MATS, &skel.bind());
+        MATS.as_ptr()
     }
 }
 

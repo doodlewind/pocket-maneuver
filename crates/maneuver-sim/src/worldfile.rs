@@ -66,9 +66,12 @@ pub fn load(bytes: &[u8]) -> Result<Sim, &'static str> {
     r.at += (nt + 3) & !3;
     let world = World::build(&verts, &idx, &kinds);
     let mut sim = Sim::new(world, spawn, yaw, bounds);
-    for _ in 0..nd {
+    for i in 0..nd {
         let f = r.f32s(8)?;
-        sim.dummies.push(Dummy { pos: v3(f[0], f[1], f[2]), yaw: f[3], height: f[4], nape: v3(f[5], f[6], f[7]), alive: true, cut_tick: 0 });
+        // The nape follows the giant's build and stance; the file's value is a placeholder.
+        let (pos, yaw, height, variant) = (v3(f[0], f[1], f[2]), f[3], f[4], i as u32 % 3);
+        let nape = crate::pose::titan_nape(&crate::pose::Skeleton::titan(variant), pos, yaw, height);
+        sim.dummies.push(Dummy { pos, yaw, height, nape, alive: true, cut_tick: 0, variant });
     }
     for _ in 0..np {
         let f = r.f32s(4)?;

@@ -91,14 +91,14 @@ export class World {
         for (const l of layers) {
           const geo = this.meshes.at(l, key[0], key[2]);
           const [vb, vt] = stripV(opts.top);
-          const a = mix(p0, p1, t1);
-          const b2 = mix(p3, p2, t1);
+          const a = mix(p0, p1, t0);
+          const b2 = mix(p3, p2, t0);
           const width = Math.hypot(b2[0] - a[0], b2[2] - a[2]) / opts.top.mPerU;
-          geo.quad(a, b2, mix(p3, p2, t0), mix(p0, p1, t0), [i * 0.37, i * 0.37 + width, vb, vt], opts.topTint ?? tint);
+          geo.quad(a, b2, mix(p3, p2, t1), mix(p0, p1, t1), [i * 0.37, i * 0.37 + width, vb, vt], opts.topTint ?? tint);
         }
       }
       const kind = opts.topKind ?? KIND.GROUND;
-      if (kind >= 0) this.col.quad(p1, p2, p3, p0, kind);
+      if (kind >= 0) this.col.quad(p0, p3, p2, p1, kind);
     } else if (opts.top) {
       const [vb, vt] = stripV(opts.top);
       const c: V3 = [pts.reduce((s, p) => s + p[0], 0) / n, pts[0][1] + y1, pts.reduce((s, p) => s + p[2], 0) / n];

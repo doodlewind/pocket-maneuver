@@ -13,7 +13,7 @@ mod ir;
 mod texture;
 
 use ir::{layer, Mesh, STRIDE};
-use maneuver_pack::{self as pack, mesh_kind, MeshRec, ModelHeader, ModelVertex, Vertex};
+use maneuver_pack::{self as pack, mesh_kind, MeshRec, ModelHeader, SkinVertex, Vertex};
 use rayon::prelude::*;
 use serde::Deserialize;
 use serde_json::json;
@@ -137,17 +137,23 @@ fn lower(parts: &[(&Mesh, &Vec<[u8; 4]>)], kind: u32, cx: i32, cz: i32, limit: u
     Ok(out)
 }
 
-fn models(ir: &ir::Ir) -> Vec<u8> {
+fn models(ir: &ir::Ir) -> Result<Vec<u8>, String> {
+    const S: usize = ir::SKIN_STRIDE;
     let mut out = (ir.models.len() as u32).to_le_bytes().to_vec();
     for m in &ir.models {
-        let nv = m.verts.len() / STRIDE;
+        let nv = m.verts.len() / S;
+        if nv > 65535 {
+            return Err(format!("model {} has {nv} vertices; indices are 16-bit", m.head[0]));
+        }
         let head = ModelHeader { id: m.head[0] as u32, vtx_count: nv as u32, idx_count: m.idx.len() as u32, pad: 0 };
         out.extend_from_slice(pack::bytes_of(&head));
         for i in 0..nv {
-            let v = &m.verts[i * STRIDE..(i + 1) * STRIDE];
+            let v = &m.verts[i * S..(i + 1) * S];
             let c = |x: f32| (x.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            let mv = ModelVertex { pos: [v[0], v[1], v[2]], normal: [v[3], v[4], v[5]], color: [c(v[8]), c(v[9]), c(v[10]), 255] };
-            out.extend_from_slice(pack::bytes_of(&mv));
+            let n = |x: f32| (x.clamp(-1.0, 1.0) * 127.0).round() as i8;
+            let w0 = (v[11].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            let sv = SkinVertex { pos: [v[0], v[1], v[2]], normal: [n(v[3]), n(v[4]), n(v[5]), 0], color: [c(v[6]), c(v[7]), c(v[8]), 255], bones: [v[9] as u8, v[10] as u8], weights: [w0, 255 - w0] };
+            out.extend_from_slice(pack::bytes_of(&sv));
         }
         for &i in &m.idx {
             out.extend_from_slice(&(i as u16).to_le_bytes());
@@ -156,7 +162,7 @@ fn models(ir: &ir::Ir) -> Vec<u8> {
             out.push(0);
         }
     }
-    out
+    Ok(out)
 }
 
 fn arg(args: &[String], name: &str) -> Option<String> {
@@ -264,7 +270,7 @@ fn run() -> Result<(), String> {
         "stats": stats,
     });
     let meta_bytes = serde_json::to_vec(&meta).map_err(|e| e.to_string())?;
-    let model_bytes = models(&ir);
+    let model_bytes = models(&ir)?;
     let sections: Vec<(u32, &[u8])> = vec![
         (pack::META, &meta_bytes),
         (pack::TEX0, &tex),

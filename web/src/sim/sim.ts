@@ -1,7 +1,7 @@
 // The simulation core (crates/maneuver-sim) as wasm. The reference never
 // re-implements a rule: it feeds inputs and reads the snapshot.
 
-import { ABI_VERSION, SNAP_LEN } from "./abi.gen";
+import { ABI_VERSION, BONES, SNAP_LEN } from "./abi.gen";
 
 interface Exports {
   memory: WebAssembly.Memory;
@@ -18,6 +18,8 @@ interface Exports {
   mv_raycast(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, tmax: number): number;
   mv_ray_hit(): number;
   mv_audio(frames: number, rate: number): number;
+  mv_titan(i: number): number;
+  mv_bind(kind: number): number;
 }
 
 export class Sim {
@@ -26,17 +28,19 @@ export class Sim {
     readonly dummyCount: number,
   ) {}
 
-  static async load(wasm: ArrayBuffer | Response, world: Uint8Array, dummyCount: number): Promise<Sim> {
+  static async load(wasm: ArrayBuffer | Response, world: Uint8Array | null, dummyCount: number): Promise<Sim> {
     const bytes = wasm instanceof Response ? await wasm.arrayBuffer() : wasm;
     const module = await WebAssembly.compile(bytes);
     const instance = await WebAssembly.instantiate(module, {});
     const x = instance.exports as unknown as Exports;
     if (x.mv_abi_version() !== ABI_VERSION || x.mv_snapshot_len() !== SNAP_LEN) throw new Error("simulation wasm does not match abi.gen.ts; run `bun tools/maneuver.ts sim`");
-    const ptr = x.mv_alloc(world.length);
-    new Uint8Array(x.memory.buffer, ptr, world.length).set(world);
-    const code = x.mv_load(ptr, world.length);
-    x.mv_free(ptr, world.length);
-    if (code !== 0) throw new Error(`world file rejected (${code})`);
+    if (world) {
+      const ptr = x.mv_alloc(world.length);
+      new Uint8Array(x.memory.buffer, ptr, world.length).set(world);
+      const code = x.mv_load(ptr, world.length);
+      x.mv_free(ptr, world.length);
+      if (code !== 0) throw new Error(`world file rejected (${code})`);
+    }
     return new Sim(x, dummyCount);
   }
   reset() {
@@ -55,6 +59,14 @@ export class Sim {
   /** Per target: alive, ticks since its cut. */
   dummies(): Float32Array {
     return new Float32Array(this.x.memory.buffer, this.x.mv_dummies(), this.dummyCount * 2);
+  }
+  /** Skin matrices of giant `i` at the current tick; valid until the next call. */
+  titan(i: number): Float32Array {
+    return new Float32Array(this.x.memory.buffer, this.x.mv_titan(i), BONES * 12);
+  }
+  /** A copy of the bind-pose bone transforms: kind 0 is the player, 1 to 3 the giants. */
+  bind(kind: number): Float32Array {
+    return new Float32Array(this.x.memory.buffer, this.x.mv_bind(kind), BONES * 12).slice();
   }
   /** Renders `frames` stereo frames of sound; the view is valid until the next call. */
   audio(frames: number, rate: number): Int16Array {

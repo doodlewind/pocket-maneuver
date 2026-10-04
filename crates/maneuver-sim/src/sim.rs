@@ -5,9 +5,9 @@
 //! pull), compressed-gas thrust and ground contact. All state lives in `Sim`;
 //! the same inputs produce the same state on every target.
 
-use crate::collide::{kind, mask, World};
+use crate::collide::{kind, mask, Contact, Hit, World};
 use crate::math::*;
-use crate::pose::{Pose, PoseIn};
+use crate::pose::{Pose, PoseIn, Skeleton, BONES};
 
 pub const DT: f32 = 1.0 / 60.0;
 const SUBSTEPS: u32 = 2;
@@ -94,6 +94,10 @@ pub mod tune {
     pub const TWO_WIRE: f32 = 0.68;
     /// No pull is added above this closing speed.
     pub const REEL_V_MAX: f32 = 52.0;
+    /// Spring rate (1/s²) and damping (1/s) of a wire stretched past its length, and how far it stretches.
+    pub const WIRE_SPRING: f32 = 70.0;
+    pub const WIRE_DAMP: f32 = 9.0;
+    pub const WIRE_STRETCH: f32 = 0.05;
     /// Upward assist while hanging on a wire whose anchor is above.
     pub const LIFT: f32 = 8.0;
     /// A wire lets go when its anchor is this close.
@@ -155,10 +159,12 @@ pub struct Hook {
     pub t: f32,
     pub flight: f32,
     pub zip: bool,
+    /// What the hook is in: a triangle of the world, or `TITAN + index`.
+    pub target: u32,
 }
 
 impl Hook {
-    const NONE: Hook = Hook { state: hook::IDLE, anchor: V3::ZERO, normal: V3::UP, tip: V3::ZERO, from: V3::ZERO, len: 0.0, t: 0.0, flight: 0.0, zip: false };
+    const NONE: Hook = Hook { state: hook::IDLE, anchor: V3::ZERO, normal: V3::UP, tip: V3::ZERO, from: V3::ZERO, len: 0.0, t: 0.0, flight: 0.0, zip: false, target: 0 };
     #[inline]
     pub fn attached(&self) -> bool {
         self.state == hook::ATTACHED
@@ -174,7 +180,11 @@ pub struct Anchor {
     pub valid: bool,
     pub point: V3,
     pub normal: V3,
+    pub target: u32,
 }
+
+/// Hit ids from this value up are giants, not triangles.
+pub const TITAN: u32 = 0xffff_0000;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Player {
@@ -235,6 +245,8 @@ pub struct Dummy {
     pub nape: V3,
     pub alive: bool,
     pub cut_tick: u32,
+    /// Body type: `Skeleton::titan(variant)`.
+    pub variant: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -269,6 +281,7 @@ pub struct Sim {
     pub events: u32,
     pub reticle: [Anchor; 3],
     pub pose: Pose,
+    titan_rig: [(Skeleton, [M34; BONES]); 3],
     pub auto: crate::auto::Auto,
     prev_buttons: u32,
     hitstop: u32,
@@ -297,7 +310,105 @@ fn seg_dist(c: V3, a: V3, b: V3) -> f32 {
     (c - (a + ab * t)).len()
 }
 
+/// A standing giant's body for collision: centre, half extents and yaw.
+fn titan_box(d: &Dummy) -> (V3, V3, f32) {
+    (d.pos + v3(0.0, d.height * 0.5, 0.0), v3(d.height * 0.17, d.height * 0.5, d.height * 0.1), d.yaw)
+}
+
+/// Nearest hit among the static world and the standing giants.
+fn ray_all(world: &World, dummies: &[Dummy], o: V3, d: V3, tmax: f32) -> Option<Hit> {
+    let mut best = world.raycast(o, d, tmax, mask::ALL);
+    let mut best_t = best.map_or(tmax, |h| h.t);
+    for (i, t) in dummies.iter().enumerate() {
+        if !t.alive || (t.pos - o).flat().len() > best_t + t.height {
+            continue;
+        }
+        let (c, half, yaw) = titan_box(t);
+        let inv = M3::rot_y(-yaw);
+        let lo = inv.apply(o - c);
+        let ld = inv.apply(d);
+        // Slabs in the box's frame.
+        let (mut t0, mut t1, mut axis, mut sign) = (0.0f32, best_t, 3usize, 0.0f32);
+        let mut miss = false;
+        for (a, (p, dir, h)) in [(lo.x, ld.x, half.x), (lo.y, ld.y, half.y), (lo.z, ld.z, half.z)].into_iter().enumerate() {
+            if abs(dir) < 1e-7 {
+                if abs(p) > h {
+                    miss = true;
+                }
+                continue;
+            }
+            let (mut a0, mut a1) = ((-h - p) / dir, (h - p) / dir);
+            let mut s = -1.0;
+            if a0 > a1 {
+                core::mem::swap(&mut a0, &mut a1);
+                s = 1.0;
+            }
+            if a0 > t0 {
+                t0 = a0;
+                axis = a;
+                sign = s;
+            }
+            t1 = min(t1, a1);
+        }
+        if miss || t0 > t1 || axis == 3 || t0 <= 1e-4 {
+            continue;
+        }
+        let n = M3::rot_y(yaw).apply(match axis {
+            0 => v3(sign, 0.0, 0.0),
+            1 => v3(0.0, sign, 0.0),
+            _ => v3(0.0, 0.0, sign),
+        });
+        best_t = t0;
+        best = Some(Hit { t: t0, tri: TITAN + i as u32, n, kind: kind::WOOD, front: true });
+    }
+    best
+}
+
+/// Deepest contact of a sphere with the static world or a standing giant.
+fn contact_all(world: &World, dummies: &[Dummy], c: V3, r: f32) -> Option<Contact> {
+    let mut best = world.deepest_contact(c, r);
+    for (i, t) in dummies.iter().enumerate() {
+        if !t.alive || (t.pos - c).flat().len() > t.height {
+            continue;
+        }
+        let (bc, half, yaw) = titan_box(t);
+        let l = M3::rot_y(-yaw).apply(c - bc);
+        let q = v3(clamp(l.x, -half.x, half.x), clamp(l.y, -half.y, half.y), clamp(l.z, -half.z, half.z));
+        let d = l - q;
+        let dist = d.len();
+        if dist >= r {
+            continue;
+        }
+        // Inside the box: leave through the nearest face.
+        let (n, depth) = if dist > 1e-5 {
+            (d * (1.0 / dist), r - dist)
+        } else {
+            let gaps = [half.x - abs(l.x), half.y - abs(l.y), half.z - abs(l.z)];
+            let a = if gaps[0] < gaps[2] { 0 } else { 2 };
+            let n = if a == 0 { v3(if l.x < 0.0 { -1.0 } else { 1.0 }, 0.0, 0.0) } else { v3(0.0, 0.0, if l.z < 0.0 { -1.0 } else { 1.0 }) };
+            (n, gaps[a] + r)
+        };
+        if best.map_or(true, |b| depth > b.depth) {
+            best = Some(Contact { tri: TITAN + i as u32, n: M3::rot_y(yaw).apply(n), depth, kind: kind::WOOD });
+        }
+    }
+    best
+}
+
 impl Sim {
+    /// Nearest hit along a ray, giants included.
+    pub fn ray(&self, o: V3, d: V3, tmax: f32) -> Option<Hit> {
+        ray_all(&self.world, &self.dummies, o, d, tmax)
+    }
+
+    /// Skin matrices of giant `i` at this tick.
+    pub fn titan_skin(&self, i: usize) -> [M34; BONES] {
+        let d = &self.dummies[i];
+        let (skel, inv) = &self.titan_rig[(d.variant % 3) as usize];
+        let fallen = if d.alive { None } else { Some(self.tick.wrapping_sub(d.cut_tick) as f32 * DT) };
+        crate::pose::titan_skin(skel, inv, d.pos, d.yaw, d.height, self.p.pos, self.tick as f32 * DT, i as f32 * 0.37, fallen)
+    }
+
     pub fn new(world: World, spawn: V3, spawn_yaw: f32, bounds: f32) -> Sim {
         let mut s = Sim {
             world,
@@ -341,6 +452,10 @@ impl Sim {
             events: 0,
             reticle: [Anchor::default(); 3],
             pose: Pose::new(),
+            titan_rig: [0, 1, 2].map(|v| {
+                let s = Skeleton::titan(v);
+                (s, s.bind_inverse())
+            }),
             auto: crate::auto::Auto::new(),
             prev_buttons: 0,
             hitstop: 0,
@@ -380,6 +495,7 @@ impl Sim {
         self.cam.dist = CAM_DIST;
         self.cam.pivot = at + v3(0.0, 1.1, 0.0);
         self.cam.idle = 10.0;
+        self.pose.reset();
         self.events |= ev::RESPAWN;
         self.place_camera();
     }
@@ -411,14 +527,14 @@ impl Sim {
             for el in ELEVS {
                 let e = clamp(el + bias, -0.7, 1.35);
                 let d = forward(base_yaw - side * yo, e);
-                let Some(h) = self.world.raycast(o, d, HOOK_RANGE, mask::ALL) else { continue };
+                let Some(h) = self.ray(o, d, HOOK_RANGE) else { continue };
                 if !h.front || mask::ANCHOR & (1 << h.kind) == 0 || h.t < 7.0 {
                     continue;
                 }
                 let s = 1.0 - abs(h.t - ideal) / ideal - abs(yo) * 0.35 - abs(e - 0.5) * 0.5 - if yo < 0.0 { 0.4 } else { 0.0 };
                 if s > best_s {
                     best_s = s;
-                    best = Anchor { valid: true, point: o + d * h.t - d * 0.05, normal: h.n };
+                    best = Anchor { valid: true, point: o + d * h.t - d * 0.05, normal: h.n, target: h.tri };
                 }
             }
         }
@@ -431,8 +547,8 @@ impl Sim {
         let o = self.cam.pos;
         let skip = max((self.p.pos - o).dot(f), 0.0) + 1.2;
         let start = o + f * skip;
-        match self.world.raycast(start, f, ZIP_RANGE, mask::ALL) {
-            Some(h) if h.front && mask::AIMED & (1 << h.kind) != 0 && (start + f * h.t - self.p.pos).len() > 6.0 => Anchor { valid: true, point: start + f * h.t - f * 0.05, normal: h.n },
+        match self.ray(start, f, ZIP_RANGE) {
+            Some(h) if h.front && mask::AIMED & (1 << h.kind) != 0 && (start + f * h.t - self.p.pos).len() > 6.0 => Anchor { valid: true, point: start + f * h.t - f * 0.05, normal: h.n, target: h.tri },
             _ => Anchor::default(),
         }
     }
@@ -442,11 +558,11 @@ impl Sim {
         let h = &mut self.p.hooks[i];
         if a.valid {
             let d = (a.point - hip).len();
-            *h = Hook { state: hook::FLYING, anchor: a.point, normal: a.normal, tip: hip, from: hip, len: d, t: 0.0, flight: clamp(d / HOOK_SPEED, 0.05, 0.6), zip };
+            *h = Hook { state: hook::FLYING, anchor: a.point, normal: a.normal, tip: hip, from: hip, len: d, t: 0.0, flight: clamp(d / HOOK_SPEED, 0.05, 0.6), zip, target: a.target };
         } else {
             let side = if i == 0 { -1.0 } else { 1.0 };
             let dir = forward(self.cam.yaw - side * 0.3, clamp(self.cam.pitch + 0.45, -0.3, 1.2));
-            *h = Hook { state: hook::MISS, anchor: hip, normal: V3::UP, tip: hip, from: dir, len: 0.0, t: 0.0, flight: 0.0, zip };
+            *h = Hook { state: hook::MISS, anchor: hip, normal: V3::UP, tip: hip, from: dir, len: 0.0, t: 0.0, flight: 0.0, zip, target: 0 };
             self.events |= ev::HOOK_MISS;
         }
         self.events |= if i == 0 { ev::HOOK_FIRE_L } else { ev::HOOK_FIRE_R };
@@ -528,13 +644,14 @@ impl Sim {
             }
             if (self.tick + i as u32) % 4 == 0 && d > 3.0 {
                 let dir = to * (1.0 / d);
-                if let Some(hit) = self.world.raycast(self.p.pos, dir, d - 0.6, mask::ALL) {
+                if let Some(hit) = self.ray(self.p.pos, dir, d - 0.6) {
                     if hit.front && mask::AIMED & (1 << hit.kind) != 0 {
                         let h = &mut self.p.hooks[i];
                         h.anchor = self.p.pos + dir * (hit.t - 0.05);
                         h.normal = hit.n;
                         h.len = min(h.len, hit.t);
                         h.tip = h.anchor;
+                        h.target = hit.tri;
                     } else {
                         self.release(i);
                     }
@@ -574,6 +691,11 @@ impl Sim {
             }
             if p.vel.dot(n) < REEL_V_MAX {
                 a += n * (pull * share);
+            }
+            // The wire stretches a little: past its length it pulls back like a spring and damps the recoil.
+            if d > k.len {
+                let out = -p.vel.dot(n);
+                a += n * (WIRE_SPRING * (d - k.len) + WIRE_DAMP * max(out, 0.0));
             }
             if r.y > 1.0 {
                 lifted = true;
@@ -651,7 +773,7 @@ impl Sim {
         let dist = delta.len();
         if dist > 1e-6 {
             let dir = delta * (1.0 / dist);
-            match self.world.raycast(p.pos, dir, dist + 0.06, mask::ALL) {
+            match ray_all(&self.world, &self.dummies, p.pos, dir, dist + 0.06) {
                 Some(hit) if hit.front => {
                     p.pos += dir * max(hit.t - 0.06, 0.0);
                 }
@@ -659,16 +781,17 @@ impl Sim {
             }
         }
 
-        // Rope: a wire never gets longer.
+        // The stretch has a limit: past it the wire holds.
         for k in &p.hooks {
             if !k.attached() {
                 continue;
             }
             let r = k.anchor - p.pos;
             let d = r.len();
-            if d > k.len && d > 1e-3 {
+            let limit = k.len * (1.0 + WIRE_STRETCH) + 0.5;
+            if d > limit && d > 1e-3 {
                 let n = r * (1.0 / d);
-                p.pos += n * (d - k.len);
+                p.pos += n * (d - limit);
                 let vn = p.vel.dot(n);
                 if vn < 0.0 {
                     p.vel -= n * vn;
@@ -682,7 +805,7 @@ impl Sim {
         let mut impact = 0.0f32;
         let mut wall_impact = 0.0f32;
         for _ in 0..4 {
-            let Some(c) = self.world.deepest_contact(p.pos, RADIUS) else { break };
+            let Some(c) = contact_all(&self.world, &self.dummies, p.pos, RADIUS) else { break };
             p.pos += c.n * (c.depth + 1e-3);
             let vn = p.vel.dot(c.n);
             if vn < 0.0 {
@@ -741,7 +864,7 @@ impl Sim {
             }
         } else if was && p.vel.y <= 2.5 && n_att == 0 {
             // Stay on the ground over small drops and slope changes.
-            match self.world.raycast(p.pos, v3(0.0, -1.0, 0.0), RADIUS + 0.45, mask::ALL) {
+            match ray_all(&self.world, &self.dummies, p.pos, v3(0.0, -1.0, 0.0), RADIUS + 0.45) {
                 Some(hit) if hit.front && hit.n.y >= WALK_NY => {
                     p.pos.y -= hit.t - RADIUS;
                     p.ground_n = hit.n;
@@ -801,7 +924,7 @@ impl Sim {
         let want = lerp(CAM_DIST, CAM_DIST_FAST, fast);
         let f = forward(c.yaw, c.pitch);
         let back = -f;
-        let allowed = match self.world.raycast(c.pivot, back, want + 0.5, mask::ALL) {
+        let allowed = match ray_all(&self.world, &self.dummies, c.pivot, back, want + 0.5) {
             Some(h) => clamp(h.t - 0.4, 0.9, want),
             None => want,
         };
@@ -955,7 +1078,9 @@ impl Sim {
                 if p.ground_n.y > 0.9 && p.ground_kind != kind::WATER {
                     p.safe = p.pos;
                 }
-                p.run_phase += p.vel.flat().len() * DT * 1.9;
+                // The gait's phase advances by distance, so a planted foot keeps its place.
+                let hs = p.vel.flat().len();
+                p.run_phase += TAU * hs / crate::pose::stride(hs) * DT;
             } else {
                 p.air_time += DT;
             }
@@ -1055,6 +1180,15 @@ impl Sim {
                 }
                 break;
             }
+            // Wires in a giant that falls let go.
+            if self.events & ev::SLASH_HIT != 0 {
+                let id = TITAN + self.run.last_cut;
+                for h in 0..2 {
+                    if self.p.hooks[h].target == id && self.p.hooks[h].out() {
+                        self.release(h);
+                    }
+                }
+            }
             if self.run.kills as usize == self.dummies.len() && !self.dummies.is_empty() && !self.run.done {
                 self.run.done = true;
                 self.events |= ev::RUN_DONE;
@@ -1095,24 +1229,22 @@ impl Sim {
 
     fn update_pose(&mut self, _move_dir: V3, _mag: f32) {
         let p = &self.p;
-        let mut wire = [V3::ZERO; 2];
-        for i in 0..2 {
-            if p.hooks[i].attached() {
-                wire[i] = (p.hooks[i].anchor - p.pos).norm();
-            }
-        }
+        let e = self.events;
         let input = PoseIn {
             pos: p.pos,
             vel: p.vel,
             facing: p.facing,
             grounded: p.grounded,
             act: p.act,
-            act_t: p.act_t,
             run_phase: p.run_phase,
             slash_t: p.slash_t,
             land_t: p.land_t,
-            wire,
             tick: self.tick,
+            hooks: [0, 1].map(|i| (p.hooks[i].state, p.hooks[i].tip, p.hooks[i].anchor, p.hooks[i].len)),
+            fired: [e & ev::HOOK_FIRE_L != 0, e & ev::HOOK_FIRE_R != 0],
+            bit: [e & ev::HOOK_ATTACH_L != 0, e & ev::HOOK_ATTACH_R != 0],
+            burst: e & (ev::BURST | ev::WALL_KICK) != 0,
+            released: e & ev::RELEASE != 0,
         };
         self.pose.update(&input);
     }

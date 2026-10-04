@@ -1,12 +1,11 @@
-//! Everything that is not the baked world: the sky dome, the character's
-//! thirteen parts, the targets, the wires and the gas. Vertices are lit and
-//! placed on the CPU into 16-byte records (position, colour); the character
-//! is about 700 of them.
+//! Everything that is not the baked world: the sky dome, the player and the
+//! giants (skinned on the GPU from the simulation's bone matrices), the cloak,
+//! the wires and the gas.
 
-use maneuver_pack::{self as pack, ModelHeader, ModelVertex, Pack};
+use maneuver_pack::{self as pack, ModelHeader, Pack, SkinVertex};
 use maneuver_sim::collide::mask;
 use maneuver_sim::math::*;
-use maneuver_sim::pose::PARTS;
+use maneuver_sim::pose::{BONES, CLOAK_H, CLOAK_N, CLOAK_W, ROPE_N};
 use maneuver_sim::sim::hook;
 use maneuver_sim::Sim;
 use pocket_vita_gxm::mem::{Block, Kind, Ring};
@@ -24,13 +23,18 @@ pub struct ColorVertex {
 }
 
 pub const QUADS: usize = 2048;
-const PUFFS: usize = 72;
+const PUFFS: usize = 96;
 /// A soft disc: a centre and `FAN` rim vertices, opaque in the middle and clear at the rim.
 const FAN: usize = 12;
-/// Discs per frame: the gas puffs and the character's ground shadow.
+/// Discs per frame: the gas and steam puffs and the character's ground shadow.
 const DISCS: usize = PUFFS + 1;
 const SKY_SEGS: usize = 24;
 const SKY_RINGS: usize = 13;
+/// A giant nearer than this draws its detailed mesh; beyond `TITAN_FAR` it is not drawn.
+const TITAN_NEAR: f32 = 140.0;
+const TITAN_FAR: f32 = 520.0;
+/// The cloak's sRGB colour (`CLOAK` in web/src/world/scout.ts).
+const CLOAK: [f32; 3] = [0.2, 0.42, 0.31];
 
 /// Scene constants from the pack's META.
 pub struct Scene {
@@ -107,6 +111,11 @@ impl Scene {
         out
     }
 
+    /// The light table of the skinning program: sun direction and visibility, sun, sky, bounce.
+    pub fn light(&self, vis: f32) -> [f32; 16] {
+        [self.sun_dir.x, self.sun_dir.y, self.sun_dir.z, vis, self.sun[0], self.sun[1], self.sun[2], 0.0, self.sky[0], self.sky[1], self.sky[2], 0.0, self.bounce[0], self.bounce[1], self.bounce[2], 0.0]
+    }
+
     /// Sky radiance toward `d` (`web/src/render/sky.ts`).
     pub fn sky_color(&self, d: V3) -> [f32; 3] {
         let h = max(d.y, 0.0);
@@ -121,36 +130,22 @@ impl Scene {
     }
 }
 
-struct Model {
-    /// Position, normal, linear tint.
-    verts: Vec<(V3, V3, [f32; 3])>,
-    idx: Vec<u16>,
+/// A skinned model in GPU memory.
+#[derive(Clone, Copy)]
+struct SkinMesh {
+    vb: *const u8,
+    ib: *const u16,
+    idx: u32,
 }
 
-fn models(p: &Pack) -> Result<Vec<(u32, Model)>, String> {
-    let b = p.section(pack::MODL)?;
-    let n: u32 = pack::read(b, 0).ok_or("model count")?;
-    let mut at = 4;
-    let mut out = Vec::new();
-    for _ in 0..n {
-        let h: ModelHeader = pack::read(b, at).ok_or("model header")?;
-        at += core::mem::size_of::<ModelHeader>();
-        let mut verts = Vec::with_capacity(h.vtx_count as usize);
-        for _ in 0..h.vtx_count {
-            let v: ModelVertex = pack::read(b, at).ok_or("model vertex")?;
-            at += core::mem::size_of::<ModelVertex>();
-            let lin = |c: u8| libm::powf(c as f32 / 255.0, 2.2);
-            verts.push((v3(v.pos[0], v.pos[1], v.pos[2]), v3(v.normal[0], v.normal[1], v.normal[2]), [lin(v.color[0]), lin(v.color[1]), lin(v.color[2])]));
-        }
-        let mut idx = Vec::with_capacity(h.idx_count as usize);
-        for _ in 0..h.idx_count {
-            idx.push(pack::read::<u16>(b, at).ok_or("model index")?);
-            at += 2;
-        }
-        at = (at + 3) & !3;
-        out.push((h.id, Model { verts, idx }));
+/// Three rows per bone, as the skinning program reads them.
+fn bone_rows(skin: &[M34; BONES], sink: f32, out: &mut [f32; BONES * 12]) {
+    for (b, m) in skin.iter().enumerate() {
+        let o = b * 12;
+        out[o..o + 4].copy_from_slice(&[m.r.x.x, m.r.y.x, m.r.z.x, m.t.x]);
+        out[o + 4..o + 8].copy_from_slice(&[m.r.x.y, m.r.y.y, m.r.z.y, m.t.y - sink]);
+        out[o + 8..o + 12].copy_from_slice(&[m.r.x.z, m.r.y.z, m.r.z.z, m.t.z]);
     }
-    Ok(out)
 }
 
 #[derive(Clone, Copy)]
@@ -158,16 +153,15 @@ struct Puff {
     pos: V3,
     vel: V3,
     age: f32,
+    life: f32,
+    size: f32,
 }
 
 /// What `update` wrote for this frame.
 pub struct Frame {
-    char_vb: *const u8,
-    nape_vb: *const u8,
-    nape_ib: *const u16,
-    nape_idx: u32,
-    wire_vb: *const u8,
-    wire_quads: u32,
+    cloak_vb: *const u8,
+    rope_vb: *const u8,
+    rope_quads: u32,
     disc_vb: *const u8,
     discs: u32,
 }
@@ -179,18 +173,17 @@ pub struct Actors {
     sky_idx: u32,
     /// Two soft discs toward the sun: the disc and its halo.
     sun_vb: *const u8,
-    body_vb: *const u8,
-    body_ib: *const u16,
-    body_idx: u32,
-    char_ib: *const u16,
-    char_idx: u32,
-    char_verts: usize,
+    scout: SkinMesh,
+    /// Per build: detailed and coarse.
+    titans: [[SkinMesh; 2]; 3],
+    /// Sun visibility where each giant stands.
+    titan_vis: Vec<f32>,
+    cloak_ib: *const u16,
+    cloak_idx: u32,
     /// Shared indices for quads: 0 1 2, 0 2 3, per four vertices.
     pub quad_ib: *const u16,
     /// Shared indices for discs of `FAN + 1` vertices.
     fan_ib: *const u16,
-    parts: Vec<Model>,
-    nape: Model,
     puffs: [Puff; PUFFS],
     next_puff: usize,
     vis: f32,
@@ -200,27 +193,45 @@ impl Actors {
     /// # Safety
     /// GXM is initialized.
     pub unsafe fn load(p: &Pack, scene: &Scene, sim: &Sim) -> Result<Actors, String> {
-        let mut all = models(p)?;
-        let take = |all: &mut Vec<(u32, Model)>, id: u32| all.iter().position(|m| m.0 == id).map(|i| all.swap_remove(i).1).ok_or(format!("pack has no model {id}"));
-        let body = take(&mut all, 100)?;
-        let nape = take(&mut all, 101)?;
-        let mut parts = Vec::new();
-        for i in 0..PARTS as u32 {
-            parts.push(take(&mut all, i)?);
-        }
-
+        let modl = p.section(pack::MODL)?;
+        let count: u32 = pack::read(modl, 0).ok_or("model count")?;
         let sky_verts = SKY_RINGS * SKY_SEGS;
         let sky_idx = (SKY_RINGS - 1) * SKY_SEGS * 6;
-        let body_verts = body.verts.len() * sim.dummies.len();
-        let body_idx = body.idx.len() * sim.dummies.len();
-        let char_verts: usize = parts.iter().map(|m| m.verts.len()).sum();
-        let char_idx: usize = parts.iter().map(|m| m.idx.len()).sum();
-        if body_verts > 65535 || char_verts > 65535 {
-            return Err("too many model vertices for 16-bit indices".into());
-        }
-        let size = (sky_verts + body_verts + 2 * (FAN + 1)) * 16 + (sky_idx + body_idx + char_idx + QUADS * 6 + DISCS * FAN * 3) * 2 + 256;
+        let cloak_idx = (CLOAK_W - 1) * (CLOAK_H - 1) * 6;
+        let size = modl.len() + count as usize * 64 + (sky_verts + 2 * (FAN + 1)) * 16 + (sky_idx + cloak_idx + QUADS * 6 + DISCS * FAN * 3) * 2 + 1024;
         let mut block = Block::with_access(Kind::Main, size, false)?;
         let mut alloc = |bytes: usize| block.alloc(bytes, 16).ok_or("actor geometry block".to_string());
+
+        // Skinned models, copied as they are in the pack.
+        let none = SkinMesh { vb: core::ptr::null(), ib: core::ptr::null(), idx: 0 };
+        let mut scout = none;
+        let mut titans = [[none; 2]; 3];
+        let mut at = 4;
+        for _ in 0..count {
+            let h: ModelHeader = pack::read(modl, at).ok_or("model header")?;
+            at += core::mem::size_of::<ModelHeader>();
+            let vbytes = h.vtx_count as usize * core::mem::size_of::<SkinVertex>();
+            let ibytes = h.idx_count as usize * 2;
+            if at + vbytes + ibytes > modl.len() {
+                return Err("model section is truncated".into());
+            }
+            let vb = alloc(vbytes)?;
+            core::ptr::copy_nonoverlapping(modl.as_ptr().add(at), vb, vbytes);
+            at += vbytes;
+            let ib = alloc(ibytes)?;
+            core::ptr::copy_nonoverlapping(modl.as_ptr().add(at), ib, ibytes);
+            at = (at + ibytes + 3) & !3;
+            let mesh = SkinMesh { vb, ib: ib.cast(), idx: h.idx_count };
+            match h.id {
+                0 => scout = mesh,
+                10..=12 => titans[(h.id - 10) as usize][0] = mesh,
+                20..=22 => titans[(h.id - 20) as usize][1] = mesh,
+                _ => {}
+            }
+        }
+        if scout.idx == 0 || titans.iter().flatten().any(|m| m.idx == 0) {
+            return Err("the pack lacks a skinned model".into());
+        }
 
         // Sky: rings from just under the horizon to the zenith.
         let sky_vb = alloc(sky_verts * 16)?.cast::<ColorVertex>();
@@ -245,7 +256,6 @@ impl Actors {
                 }
             }
         }
-
         let sun_vb = alloc(2 * (FAN + 1) * 16)?.cast::<ColorVertex>();
         let ax = scene.sun_dir.cross(V3::UP).norm_or(v3(1.0, 0.0, 0.0));
         let ay = scene.sun_dir.cross(ax);
@@ -260,29 +270,17 @@ impl Actors {
             }
         }
 
-        // Targets: every body in world space, lit once.
-        let body_vb = alloc(body_verts.max(1) * 16)?.cast::<ColorVertex>();
-        let body_ib = alloc(body_idx.max(1) * 2)?.cast::<u16>();
-        for (di, d) in sim.dummies.iter().enumerate() {
-            let rot = M3::rot_y(d.yaw);
-            let vis = if sim.world.raycast(d.pos + v3(0.0, d.height * 0.7, 0.0) + scene.sun_dir * 1.5, scene.sun_dir, 500.0, mask::ALL).is_none() { 1.0 } else { 0.0 };
-            for (vi, (pos, n, tint)) in body.verts.iter().enumerate() {
-                let w = rot.apply(*pos * d.height) + d.pos;
-                *body_vb.add(di * body.verts.len() + vi) = ColorVertex { pos: [w.x, w.y, w.z], color: scene.shade(rot.apply(*n), *tint, vis) };
+        let cloak_ib = alloc(cloak_idx * 2)?.cast::<u16>();
+        let mut k = 0;
+        for r in 0..CLOAK_H - 1 {
+            for c in 0..CLOAK_W - 1 {
+                let a = (r * CLOAK_W + c) as u16;
+                let w = CLOAK_W as u16;
+                for i in [a, a + w, a + 1, a + 1, a + w, a + w + 1] {
+                    *cloak_ib.add(k) = i;
+                    k += 1;
+                }
             }
-            for (ii, i) in body.idx.iter().enumerate() {
-                *body_ib.add(di * body.idx.len() + ii) = (di * body.verts.len()) as u16 + i;
-            }
-        }
-
-        let char_ib = alloc(char_idx * 2)?.cast::<u16>();
-        let (mut vi, mut ii) = (0usize, 0usize);
-        for m in &parts {
-            for i in &m.idx {
-                *char_ib.add(ii) = vi as u16 + i;
-                ii += 1;
-            }
-            vi += m.verts.len();
         }
         let quad_ib = alloc(QUADS * 12)?.cast::<u16>();
         for q in 0..QUADS {
@@ -291,7 +289,6 @@ impl Actors {
                 *quad_ib.add(q * 6 + j) = b + o;
             }
         }
-
         let fan_ib = alloc(DISCS * FAN * 6)?.cast::<u16>();
         for d in 0..DISCS {
             let b = (d * (FAN + 1)) as u16;
@@ -301,6 +298,7 @@ impl Actors {
                 *fan_ib.add((d * FAN + t) * 3 + 2) = b + 1 + ((t + 1) % FAN) as u16;
             }
         }
+        let titan_vis = sim.dummies.iter().map(|d| if sim.world.raycast(d.pos + v3(0.0, d.height * 0.7, 0.0) + scene.sun_dir * (d.height * 0.3), scene.sun_dir, 500.0, mask::ALL).is_none() { 1.0 } else { 0.25 }).collect();
 
         Ok(Actors {
             _block: block,
@@ -308,28 +306,31 @@ impl Actors {
             sky_ib,
             sky_idx: sky_idx as u32,
             sun_vb: sun_vb.cast(),
-            body_vb: body_vb.cast(),
-            body_ib,
-            body_idx: body_idx as u32,
-            char_ib,
-            char_idx: char_idx as u32,
-            char_verts,
+            scout,
+            titans,
+            titan_vis,
+            cloak_ib,
+            cloak_idx: cloak_idx as u32,
             quad_ib,
             fan_ib,
-            parts,
-            nape,
-            puffs: [Puff { pos: V3::ZERO, vel: V3::ZERO, age: 9.0 }; PUFFS],
+            puffs: [Puff { pos: V3::ZERO, vel: V3::ZERO, age: 9.0, life: 0.7, size: 1.0 }; PUFFS],
             next_puff: 0,
             vis: 1.0,
         })
     }
 
     /// Bytes `update` takes from the ring.
-    pub fn frame_bytes(&self, dummies: usize) -> usize {
-        (self.char_verts + dummies * self.nape.verts.len() + 8 + DISCS * (FAN + 1)) * 16 + dummies * self.nape.idx.len() * 2 + 64
+    pub fn frame_bytes(&self) -> usize {
+        (CLOAK_N + 2 * (ROPE_N - 1) * 4 + DISCS * (FAN + 1)) * 16 + 256
     }
 
-    /// Writes this frame's moving geometry into the ring.
+    fn puff(&mut self, pos: V3, vel: V3, life: f32, size: f32) {
+        let j = self.next_puff % PUFFS;
+        self.next_puff += 1;
+        self.puffs[j] = Puff { pos, vel, age: 0.0, life, size };
+    }
+
+    /// Writes this frame's CPU geometry into the ring: the cloak, the wires and the soft discs.
     ///
     /// # Safety
     /// The ring segment is not in use by the GPU.
@@ -339,73 +340,61 @@ impl Actors {
         let lit = sim.world.raycast(sim.p.pos + v3(0.0, 0.6, 0.0), scene.sun_dir, 400.0, mask::ALL).is_none();
         self.vis = ease(self.vis, if lit { 1.0 } else { 0.0 }, 10.0, max(dt, 1.0 / 60.0));
 
-        let char_vb = ring.alloc(self.char_verts * 16, 16)?.cast::<ColorVertex>();
-        let mut k = 0;
-        for (part, m) in self.parts.iter().enumerate() {
-            let t = &sim.pose.parts[part];
-            for (pos, n, tint) in &m.verts {
-                let w = t.apply(*pos);
-                *char_vb.add(k) = ColorVertex { pos: [w.x, w.y, w.z], color: scene.shade(t.r.apply(*n), *tint, self.vis) };
-                k += 1;
-            }
+        // Cloak: the simulation's cloth, lit on whichever side faces the sun.
+        let tint = CLOAK.map(|c| libm::powf(c, 2.2));
+        let cloak_vb = ring.alloc(CLOAK_N * 16, 16)?.cast::<ColorVertex>();
+        for i in 0..CLOAK_N {
+            let p = sim.pose.cloak.p[i];
+            let n = sim.pose.cloak.n[i];
+            let front = n.dot(scene.sun_dir) >= 0.0;
+            let color = scene.shade(if front { n } else { -n }, tint, if front { self.vis } else { self.vis * 0.6 });
+            *cloak_vb.add(i) = ColorVertex { pos: [p.x, p.y, p.z], color };
         }
 
-        // Napes: on the target while it stands, falling for a moment once cut.
-        let nv = self.nape.verts.len();
-        let ni = self.nape.idx.len();
-        let nape_vb = ring.alloc(sim.dummies.len().max(1) * nv * 16, 16)?.cast::<ColorVertex>();
-        let nape_ib = ring.alloc(sim.dummies.len().max(1) * ni * 2, 16)?.cast::<u16>();
-        let mut drawn = 0usize;
-        for d in &sim.dummies {
-            let since = sim.tick.wrapping_sub(d.cut_tick) as f32 / 60.0;
-            if !d.alive && since > 2.5 {
-                continue;
-            }
-            if (d.pos - eye).len2() > 600.0 * 600.0 {
-                continue;
-            }
-            let (drop, spin) = if d.alive { (0.0, 0.0) } else { (4.9 * since * since, since * 4.0) };
-            let rot = M3::rot_y(d.yaw).mul(&M3::rot_x(spin));
-            let base = d.pos - v3(0.0, drop, 0.0);
-            for (vi, (pos, n, tint)) in self.nape.verts.iter().enumerate() {
-                let w = rot.apply(*pos * d.height) + base;
-                *nape_vb.add(drawn * nv + vi) = ColorVertex { pos: [w.x, w.y, w.z], color: scene.shade(rot.apply(*n), *tint, 1.0) };
-            }
-            for (ii, i) in self.nape.idx.iter().enumerate() {
-                *nape_ib.add(drawn * ni + ii) = (drawn * nv) as u16 + i;
-            }
-            drawn += 1;
-        }
-
-        // Wires: a ribbon from each hip to its hook, facing the eye, at least a pixel wide.
-        let wire_vb = ring.alloc(8 * 16, 16)?.cast::<ColorVertex>();
-        let mut wires = 0u32;
+        // Wires: a ribbon along each rope, turned to the eye, at least a pixel wide.
+        let rope_vb = ring.alloc(2 * (ROPE_N - 1) * 4 * 16, 16)?.cast::<ColorVertex>();
+        let mut quads = 0usize;
         for i in 0..2 {
-            let h = &sim.p.hooks[i];
-            if h.state == hook::IDLE {
+            if sim.p.hooks[i].state == hook::IDLE {
                 continue;
             }
-            let (a, b) = (sim.hip(i), h.tip);
-            let mid = (a + b) * 0.5;
-            let side = (b - a).cross(mid - eye).norm_or(V3::UP);
-            let color = [34, 34, 38, 255];
-            for (j, (p, s)) in [(a, -1.0f32), (b, -1.0), (b, 1.0), (a, 1.0)].into_iter().enumerate() {
-                let w = max(0.022, (p - eye).len() * 0.0011);
-                let q = p + side * (s * w);
-                *wire_vb.add(wires as usize * 4 + j) = ColorVertex { pos: [q.x, q.y, q.z], color };
+            let pts = &sim.pose.ropes[i].p;
+            let side = |k: usize| {
+                let t = pts[(k + 1).min(ROPE_N - 1)] - pts[k.saturating_sub(1)];
+                let to = pts[k] - eye;
+                t.cross(to).norm_or(V3::UP) * max(0.014, to.len() * 0.0011)
+            };
+            let color = [30, 30, 34, 255];
+            for k in 0..ROPE_N - 1 {
+                let (a, b) = (pts[k], pts[k + 1]);
+                let (sa, sb) = (side(k), side(k + 1));
+                for (j, q) in [a - sa, b - sb, b + sb, a + sa].into_iter().enumerate() {
+                    *rope_vb.add(quads * 4 + j) = ColorVertex { pos: [q.x, q.y, q.z], color };
+                }
+                quads += 1;
             }
-            wires += 1;
         }
 
-        // Gas: puffs leave the hips while it is burning.
+        // Gas leaves the hips while it burns; a fallen giant steams.
         if sim.p.thrusting || sim.p.reeling {
             for i in 0..2 {
-                let j = self.next_puff % PUFFS;
-                self.next_puff += 1;
+                let j = self.next_puff;
                 let jitter = v3(sin(j as f32 * 12.99) * 1.4, cos(j as f32 * 7.31) * 1.4, sin(j as f32 * 3.7) * 1.4);
-                self.puffs[j] = Puff { pos: sim.hip(i) - v3(0.0, 0.25, 0.0), vel: sim.p.vel * 0.35 + jitter, age: 0.0 };
+                self.puff(sim.pose.hip[i] + v3(0.0, -0.1, 0.0), sim.p.vel * 0.35 + jitter, 0.7, 1.0);
             }
         }
+        for (i, d) in sim.dummies.iter().enumerate() {
+            let since = sim.tick.wrapping_sub(d.cut_tick) as f32 / 60.0;
+            if d.alive || since > 8.0 || (sim.tick + i as u32) % 3 != 0 || (d.pos - eye).len2() > 400.0 * 400.0 {
+                continue;
+            }
+            let j = self.next_puff as f32;
+            let fwd = heading(d.yaw);
+            let along = d.height * (0.15 + 0.8 * (sin(j * 2.3) * 0.5 + 0.5)) * saturate(since / 1.5);
+            let pos = d.pos + fwd * along + v3(sin(j * 5.1) * d.height * 0.15, d.height * 0.12, cos(j * 3.3) * d.height * 0.15);
+            self.puff(pos, v3(sin(j) * 1.5, 4.0 + d.height * 0.2, cos(j * 1.7) * 1.5), 1.6, d.height * 0.22);
+        }
+
         let disc_vb = ring.alloc(DISCS * (FAN + 1) * 16, 16)?.cast::<ColorVertex>();
         let mut discs = 0usize;
         let mut disc = |c: V3, ax: V3, ay: V3, radius: f32, color: [u8; 4]| {
@@ -431,16 +420,16 @@ impl Actors {
         let right = fwd.cross(V3::UP).norm_or(v3(1.0, 0.0, 0.0));
         let up = right.cross(fwd);
         for p in &mut self.puffs {
-            if p.age > 0.7 {
+            if p.age > p.life {
                 continue;
             }
             p.age += dt;
             p.pos += p.vel * dt;
-            let k = p.age / 0.7;
-            disc(p.pos, right, up, 0.22 + k * 1.1, [240, 243, 246, ((1.0 - k) * 150.0) as u8]);
+            let k = p.age / p.life;
+            disc(p.pos, right, up, (0.22 + k * 1.1) * p.size, [240, 243, 246, ((1.0 - k) * 150.0) as u8]);
         }
 
-        Some(Frame { char_vb: char_vb.cast(), nape_vb: nape_vb.cast(), nape_ib, nape_idx: (drawn * ni) as u32, wire_vb: wire_vb.cast(), wire_quads: wires, disc_vb: disc_vb.cast(), discs: discs as u32 })
+        Some(Frame { cloak_vb: cloak_vb.cast(), rope_vb: rope_vb.cast(), rope_quads: quads as u32, disc_vb: disc_vb.cast(), discs: discs as u32 })
     }
 
     /// The sky, first in the frame: centred on the eye, no depth, no haze.
@@ -455,38 +444,59 @@ impl Actors {
         gpu::draw(ctx, self.sun_vb, self.fan_ib, 2 * (FAN * 3) as u32);
     }
 
-    /// Targets, the character and the wires. Returns draws and triangles.
-    pub unsafe fn draw_opaque(&self, ctx: *mut g::SceGxmContext, prog: &Program, vp: &Mat4, f: &Frame, fog: f32, cull_cw: bool, character: bool) -> (u32, u32) {
+    /// The player and the giants in range. Returns draws and triangles.
+    pub unsafe fn draw_skinned(&self, ctx: *mut g::SceGxmContext, prog: &Program, vp: &Mat4, sim: &Sim, scene: &Scene, eye: V3, cull_cw: bool, character: bool) -> (u32, u32) {
         prog.bind(ctx, false);
         gpu::state_opaque(ctx, cull_cw);
-        let mut tris = self.char_idx / 3;
-        let mut draws = 1;
-        if self.body_idx > 0 {
-            prog.uniforms(ctx, vp, fog);
-            gpu::draw(ctx, self.body_vb, self.body_ib, self.body_idx);
-            tris += self.body_idx / 3;
-            draws += 1;
-        }
-        if f.nape_idx > 0 {
-            prog.uniforms(ctx, vp, fog);
-            gpu::draw(ctx, f.nape_vb, f.nape_ib, f.nape_idx);
-            tris += f.nape_idx / 3;
-            draws += 1;
-        }
+        let planes = mat::planes(vp);
+        let mut rows = [0.0f32; BONES * 12];
+        let (mut draws, mut tris) = (0, 0);
         if character {
-            prog.uniforms(ctx, vp, fog);
-            gpu::draw(ctx, f.char_vb, self.char_ib, self.char_idx);
-        }
-        if f.wire_quads > 0 {
-            g::sceGxmSetCullMode(ctx, g::SceGxmCullMode_SCE_GXM_CULL_NONE);
-            prog.uniforms(ctx, vp, fog);
-            gpu::draw(ctx, f.wire_vb, self.quad_ib, f.wire_quads * 6);
+            bone_rows(&sim.pose.skin, 0.0, &mut rows);
+            prog.skin_uniforms(ctx, vp, &rows, &scene.light(self.vis), scene.fog_density);
+            gpu::draw(ctx, self.scout.vb, self.scout.ib, self.scout.idx);
             draws += 1;
+            tris += self.scout.idx / 3;
+        }
+        for (i, d) in sim.dummies.iter().enumerate() {
+            let since = sim.tick.wrapping_sub(d.cut_tick) as f32 / 60.0;
+            if !d.alive && since > 9.0 {
+                continue;
+            }
+            let dist = (d.pos + v3(0.0, d.height * 0.5, 0.0) - eye).len();
+            // Standing or lying, the body fits in a box one height to each side.
+            let (lo, hi) = ([d.pos.x - d.height, d.pos.y - 1.0, d.pos.z - d.height], [d.pos.x + d.height, d.pos.y + d.height * 1.1, d.pos.z + d.height]);
+            if dist > TITAN_FAR || !mat::visible(&planes, &lo, &hi) {
+                continue;
+            }
+            let mesh = self.titans[(d.variant % 3) as usize][if dist < TITAN_NEAR { 0 } else { 1 }];
+            // A fallen giant sinks away.
+            let sink = if d.alive { 0.0 } else { max(since - 5.0, 0.0) * d.height * 0.08 };
+            bone_rows(&sim.titan_skin(i), sink, &mut rows);
+            prog.skin_uniforms(ctx, vp, &rows, &scene.light(self.titan_vis[i]), scene.fog_density);
+            gpu::draw(ctx, mesh.vb, mesh.ib, mesh.idx);
+            draws += 1;
+            tris += mesh.idx / 3;
         }
         (draws, tris)
     }
 
-    /// The ground shadow and the gas, blended over the scene.
+    /// The cloak and the wires: lit on the CPU, drawn from both sides.
+    pub unsafe fn draw_cloth(&self, ctx: *mut g::SceGxmContext, prog: &Program, vp: &Mat4, f: &Frame, fog: f32, character: bool) {
+        prog.bind(ctx, false);
+        gpu::state_opaque(ctx, true);
+        g::sceGxmSetCullMode(ctx, g::SceGxmCullMode_SCE_GXM_CULL_NONE);
+        if character {
+            prog.uniforms(ctx, vp, fog);
+            gpu::draw(ctx, f.cloak_vb, self.cloak_ib, self.cloak_idx);
+        }
+        if f.rope_quads > 0 {
+            prog.uniforms(ctx, vp, fog);
+            gpu::draw(ctx, f.rope_vb, self.quad_ib, f.rope_quads * 6);
+        }
+    }
+
+    /// The ground shadow, the gas and the steam, blended over the scene.
     pub unsafe fn draw_blend(&self, ctx: *mut g::SceGxmContext, prog: &Program, vp: &Mat4, f: &Frame, fog: f32) {
         if f.discs == 0 {
             return;

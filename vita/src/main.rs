@@ -30,7 +30,7 @@ use maneuver_sim::math::*;
 use maneuver_sim::sim::{btn, ev, tune, Input};
 use maneuver_sim::Sim;
 use pocket_vita_gxm::mem::{Arena, Kind, Ring};
-use pocket_vita_gxm::program::{F32, S16N, U16N, U8N};
+use pocket_vita_gxm::program::{F32, S16N, S8N, U16N, U8, U8N};
 use pocket_vita_gxm::target::Fence;
 use pocketjs_vita::{dev, dev_protocol::Op, devmenu::Action, graphics, input};
 use serde_json::{json, Value};
@@ -72,6 +72,7 @@ const WORLD_V: &str = include_str!("../shaders/world_v.cg");
 const WORLD_F: &str = include_str!("../shaders/world_f.cg");
 const COLOR_V: &str = include_str!("../shaders/color_v.cg");
 const COLOR_F: &str = include_str!("../shaders/color_f.cg");
+const SKIN_V: &str = include_str!("../shaders/skin_v.cg");
 const HUD_V: &str = include_str!("../shaders/hud_v.cg");
 const HUD_F: &str = include_str!("../shaders/hud_f.cg");
 
@@ -313,16 +314,18 @@ fn main() {
             let mut gpu = Gpu::new(live, msaa as u32)?;
             let fog = scene.fog_srgb();
             let defines = format!(
-                "#define FOG_COLOR half3({:.5}, {:.5}, {:.5})\n#define FOG_DENSITY {:.7}\n#define UV_SCALE {:.1}\n#define COLOR_SCALE {:.1}\n",
+                "#define FOG_COLOR half3({:.5}, {:.5}, {:.5})\n#define FOG_DENSITY {:.7}\n#define UV_SCALE {:.1}\n#define COLOR_SCALE {:.1}\n#define BONES {}\n",
                 fog[0],
                 fog[1],
                 fog[2],
                 scene.fog_density,
                 pack::UV_SCALE,
-                pack::COLOR_SCALE
+                pack::COLOR_SCALE,
+                maneuver_sim::pose::BONES
             );
             let world_prog = gpu.program("world", &defines, WORLD_V, WORLD_F, &Layout { attrs: &[("aPosition", 0, U16N, 3), ("aUv", 8, S16N, 2), ("aColor", 12, U8N, 4)], stride: 16 })?;
             let color_prog = gpu.program("color", &defines, COLOR_V, COLOR_F, &Layout { attrs: &[("aPosition", 0, F32, 3), ("aColor", 12, U8N, 4)], stride: 16 })?;
+            let skin_prog = gpu.program("skin", &defines, SKIN_V, COLOR_F, &Layout { attrs: &[("aPosition", 0, F32, 3), ("aNormal", 12, S8N, 4), ("aColor", 16, U8N, 4), ("aBones", 20, U8, 2), ("aWeights", 22, U8N, 2)], stride: 24 })?;
             let hud_prog = gpu.program("hud", &defines, HUD_V, HUD_F, &Layout { attrs: &[("aPosition", 0, F32, 2), ("aUv", 8, F32, 2), ("aColor", 16, U8N, 4)], stride: 20 })?;
             gpu.finish();
 
@@ -333,9 +336,9 @@ fn main() {
             let hud = Hud::load(&p, &mut vram)?;
             let sim = maneuver_sim::worldfile::load(p.section(pack::SIMW)?).map_err(|e| e.to_string())?;
             let actors = Actors::load(&p, &scene, &sim)?;
-            Ok((meta, scene, gpu, world_prog, color_prog, hud_prog, world, hud, sim, actors, vram))
+            Ok((meta, scene, gpu, world_prog, color_prog, skin_prog, hud_prog, world, hud, sim, actors, vram))
         })();
-        let (meta, scene, gpu, world_prog, color_prog, hud_prog, world, mut hud, mut sim, mut actors, vram) = match loaded {
+        let (meta, scene, gpu, world_prog, color_prog, skin_prog, hud_prog, world, mut hud, mut sim, mut actors, vram) = match loaded {
             Ok(x) => x,
             Err(e) => fail(font, &mut dev, &mut frame_no, e),
         };
@@ -343,7 +346,7 @@ fn main() {
         drop(bytes);
         let load_ms = t_load.elapsed().as_millis() as u64;
 
-        let ring_bytes = actors.frame_bytes(sim.dummies.len()) + Hud::VERTEX_BYTES + 4096;
+        let ring_bytes = actors.frame_bytes() + Hud::VERTEX_BYTES + 4096;
         let mut ring = match Ring::new(ring_bytes, 2) {
             Ok(r) => r,
             Err(e) => fail(font, &mut dev, &mut frame_no, e),
@@ -479,7 +482,8 @@ fn main() {
             if let (Some(f), true) = (&aframe, set.actors) {
                 // Inside the camera's near range the character would fill the frame.
                 let show = set.view.is_some() || (sim.cam.pos - sim.p.pos).len() > 1.7;
-                actor_stats = actors.draw_opaque(ctx, &color_prog, &vp, f, scene.fog_density, set.cull_cw, show);
+                actor_stats = actors.draw_skinned(ctx, &skin_prog, &vp, &sim, &scene, eye, set.cull_cw, show);
+                actors.draw_cloth(ctx, &color_prog, &vp, f, scene.fog_density, show);
                 actors.draw_blend(ctx, &color_prog, &vp, f, scene.fog_density);
             }
             hud.flush(ctx, &hud_prog, actors.quad_ib);

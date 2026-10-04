@@ -12,7 +12,10 @@ import { join, resolve } from "node:path";
 import { ATLAS_H, ATLAS_W, paintAtlas, STRIP, FACADE } from "../src/world/atlas";
 import { generate } from "../src/world/city";
 import { CELL, Geo, Layer, STRIDE, SUPER } from "../src/world/geo";
-import { characterParts, targetModel } from "../src/world/models";
+import { buildScout } from "../src/world/scout";
+import { SKIN_STRIDE, SkinModel } from "../src/world/sdf";
+import { buildTitan } from "../src/world/titan";
+import { Sim } from "../src/sim/sim";
 import { SCENE } from "../src/world/scene";
 import { skyColor } from "../src/render/sky";
 import { writeWorldFile } from "../src/world/worldfile";
@@ -48,19 +51,46 @@ function meshBytes(header: number[], entries: { head: number[]; geo: Geo }[]): U
   return bytes;
 }
 
+/** Skinned models: id, vertex count, index count, then 12 floats per vertex and `u32` indices. */
+function modelBytes(models: { id: number; model: SkinModel }[]): Uint8Array {
+  let size = 12;
+  for (const m of models) size += 12 + m.model.v.byteLength + m.model.i.byteLength;
+  const bytes = new Uint8Array(size);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0x444d564d, true);
+  view.setUint32(4, 2, true);
+  view.setUint32(8, models.length, true);
+  let at = 12;
+  for (const m of models) {
+    view.setInt32(at, m.id, true);
+    view.setInt32(at + 4, m.model.v.length / SKIN_STRIDE, true);
+    view.setInt32(at + 8, m.model.i.length, true);
+    at += 12;
+    bytes.set(new Uint8Array(m.model.v.buffer, m.model.v.byteOffset, m.model.v.byteLength), at);
+    at += m.model.v.byteLength;
+    bytes.set(new Uint8Array(m.model.i.buffer, m.model.i.byteOffset, m.model.i.byteLength), at);
+    at += m.model.i.byteLength;
+  }
+  return bytes;
+}
+
 const t0 = performance.now();
 const gen = generate(seed);
 const buckets = gen.world.meshes.sorted().filter((b) => b.geo.ni > 0);
-const target = targetModel();
+// Models are built on the simulation's bind poses: the player (0), then the three giant builds, detailed and coarse.
+const wasm = await Bun.file(join(import.meta.dir, "../public/sim/maneuver_sim.wasm")).arrayBuffer();
+const sim = await Sim.load(wasm, null, 0);
+const models = [{ id: 0, model: buildScout(sim.bind(0)) }];
+for (let v = 0; v < 3; v++) {
+  models.push({ id: 10 + v, model: buildTitan(v, sim.bind(1 + v), 1 / 100) });
+  models.push({ id: 20 + v, model: buildTitan(v, sim.bind(1 + v), 1 / 36) });
+}
 const files: Record<string, Uint8Array> = {
   "meshes.bin": meshBytes(
     [0x5249564d, 1, buckets.length],
     buckets.map((b) => ({ head: [b.layer, b.cx, b.cz], geo: b.geo })),
   ),
-  "models.bin": meshBytes(
-    [0x444d564d, 1, characterParts().length + 2],
-    [...characterParts().map((geo, i) => ({ head: [i], geo })), { head: [100], geo: target.body }, { head: [101], geo: target.nape }],
-  ),
+  "models.bin": modelBytes(models),
   "atlas.rgba": new Uint8Array(paintAtlas(seed).buffer),
   "world.mvsw": writeWorldFile(gen.world.col, gen.entities),
 };
