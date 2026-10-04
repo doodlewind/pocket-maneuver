@@ -24,6 +24,7 @@ pub mod pad {
     pub const PLAY: u32 = 0xffff;
 }
 
+#[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Pad {
     pub buttons: u32,
@@ -97,6 +98,7 @@ impl Default for Timing {
 
 /// What a device measured, for the statistics line and the status record. Times are milliseconds.
 #[derive(Clone, Copy, Default)]
+#[repr(C)]
 pub struct Perf {
     pub frame: f32,
     pub worst: f32,

@@ -133,6 +133,7 @@ struct Puff {
 
 /// What `update` wrote for this frame.
 #[derive(Clone, Copy, Default)]
+#[repr(C)]
 pub struct Frame {
     pub rope_quads: u32,
     pub discs: u32,
@@ -140,6 +141,7 @@ pub struct Frame {
 
 /// A giant this frame draws.
 #[derive(Clone, Copy)]
+#[repr(C)]
 pub struct Giant {
     pub index: u32,
     pub variant: u32,

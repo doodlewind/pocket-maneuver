@@ -38,6 +38,7 @@ struct Super {
 }
 
 #[derive(Clone, Copy, Default, Debug)]
+#[repr(C)]
 pub struct Stats {
     pub near: u32,
     pub mid: u32,
@@ -48,6 +49,7 @@ pub struct Stats {
 
 /// One mesh to draw: its record, and for a detailed mesh the cell it belongs to.
 #[derive(Clone, Copy, Debug)]
+#[repr(C)]
 pub struct Pick {
     pub mesh: u32,
     pub cell: u32,

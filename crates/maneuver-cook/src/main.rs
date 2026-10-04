@@ -376,7 +376,8 @@ fn cook_handheld(c: Cooked, target: handheld::Target, h: &handheld::Handheld) ->
         })
         .collect::<Result<_, _>>()?;
     let vertex_bytes = if psp { core::mem::size_of::<pack::PspVertex>() } else { core::mem::size_of::<pack::PicaVertex>() };
-    let geo = handheld::assemble(lowered, h.stream_near, vertex_bytes);
+    // Blocks of 4 x 4 cells: 256 m of detailed or simple cells, 512 m of far cells.
+    let geo = if psp { handheld::assemble(lowered, h.stream_near, vertex_bytes) } else { handheld::assemble_grouped(lowered, vertex_bytes, 4) };
     let lower_ms = t.elapsed().as_millis();
 
     let (model_bytes, model_stats) = handheld::models(ir, &h.models, target)?;
@@ -419,6 +420,11 @@ fn cook_handheld(c: Cooked, target: handheld::Target, h: &handheld::Handheld) ->
         (pack::FONT, &font),
         (if psp { pack::SIMG } else { pack::SIMW }, &simg),
     ];
+    // The 3DS shows the town from above on its lower screen.
+    let map = if psp { Vec::new() } else { handheld::map(&c.sim.world, ir.scene.sun_dir, 240, 620.0) };
+    if !psp {
+        sections.push((pack::MAPT, &map));
+    }
     if h.stream_near {
         // Last, so the sections a runtime reads at start are contiguous.
         sections.push((pack::NEAR, &geo.near));

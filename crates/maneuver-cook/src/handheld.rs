@@ -164,10 +164,22 @@ pub fn lower(parts: &[(&Mesh, &Vec<[u8; 4]>)], kind: u32, cx: i32, cz: i32, h: &
         // `u` repeats, so a whole number of repeats comes off for free and the rest is unsigned.
         let u_shift = u_min.floor();
         let mut vtx = Vec::with_capacity(b.src.len() * 16);
+        let step = if kind == mesh_kind::BACKDROP { pack::PICA_BACKDROP_STEP } else { pack::PICA_STEP };
         for (v, color) in &b.src {
             let mut pos = [0i16; 4];
             for a in 0..3 {
-                pos[a] = (((v[a] - min[a]) / (max[a] - min[a]) * 65535.0 + 0.5).clamp(0.0, 65535.0) as i32 - 32768) as i16;
+                pos[a] = match target {
+                    // Over the mesh's own bounds.
+                    Target::Psp => (((v[a] - min[a]) / (max[a] - min[a]) * 65535.0 + 0.5).clamp(0.0, 65535.0) as i32 - 32768) as i16,
+                    // On the world's grid.
+                    Target::Pica => {
+                        let q = (v[a] / step).round();
+                        if q.abs() > 32767.0 {
+                            return Err(format!("a vertex of cell {cx},{cz} at {} m is outside the 3DS position grid", v[a]));
+                        }
+                        q as i16
+                    }
+                };
             }
             let u = (v[6] - u_shift) / U_RANGE;
             if !(0.0..1.0).contains(&u) {
@@ -587,6 +599,42 @@ pub struct Geometry {
     pub largest_cell: usize,
 }
 
+/// 3DS: meshes of one level, one atlas page and one block of cells share a
+/// vertex base, and their indices follow each other. Every mesh is on the same
+/// position grid, so the runtime draws a run of adjacent visible meshes with
+/// one call instead of one call each.
+pub fn assemble_grouped(lowered: Vec<Vec<Lowered>>, vertex_bytes: usize, block_cells: i32) -> Geometry {
+    let mut g = Geometry { recs: Vec::new(), vtx: Vec::new(), idx: Vec::new(), near: Vec::new(), clip: Vec::new(), tris: [0; 4], count: [0; 4], big: 0, max_verts: 0, largest_cell: 0 };
+    let mut all: Vec<Lowered> = lowered.into_iter().flatten().collect();
+    let key = |m: &Lowered| (m.rec.kind, m.rec.page, m.rec.cz.div_euclid(block_cells), m.rec.cx.div_euclid(block_cells), m.rec.cz, m.rec.cx);
+    all.sort_by_key(key);
+    let mut group = (u32::MAX, u32::MAX, i32::MAX, i32::MAX);
+    let (mut base, mut used) = (0usize, 0usize);
+    for m in all {
+        let k = key(&m);
+        let n = m.vtx.len() / vertex_bytes;
+        if (k.0, k.1, k.2, k.3) != group || used + n > 65536 {
+            group = (k.0, k.1, k.2, k.3);
+            base = g.vtx.len() / vertex_bytes;
+            used = 0;
+        }
+        let mut rec = m.rec;
+        rec.vtx_first = base as u32;
+        rec.idx_first = g.idx.len() as u32;
+        g.idx.extend(m.idx.iter().map(|&i| i + used as u16));
+        g.vtx.extend_from_slice(&m.vtx);
+        used += n;
+        g.tris[rec.kind as usize] += m.idx.len() / 3;
+        g.count[rec.kind as usize] += 1;
+        g.max_verts = g.max_verts.max(used);
+        g.recs.push(rec);
+    }
+    while g.idx.len() % 2 != 0 {
+        g.idx.push(0);
+    }
+    g
+}
+
 pub fn assemble(lowered: Vec<Vec<Lowered>>, stream_near: bool, vertex_bytes: usize) -> Geometry {
     let mut g = Geometry { recs: Vec::new(), vtx: Vec::new(), idx: Vec::new(), near: Vec::new(), clip: Vec::new(), tris: [0; 4], count: [0; 4], big: 0, max_verts: 0, largest_cell: 0 };
     for group in lowered {
@@ -632,4 +680,73 @@ pub fn assemble(lowered: Vec<Vec<Lowered>>, stream_near: bool, vertex_bytes: usi
         g.idx.push(0);
     }
     g
+}
+
+// ---------------------------------------------------------------- the map
+
+/// The town from above for the 3DS's lower screen: every collision triangle
+/// drawn top-down, the highest surface winning, coloured by what it is and lit
+/// by the sun. `MAPT` is `width`, `height`, the half-extent in metres as f32,
+/// a zero, then RGB565 texels in row order with north (-z) up.
+pub fn map(world: &maneuver_sim::collide::World, sun: [f32; 3], size: usize, extent: f32) -> Vec<u8> {
+    use maneuver_sim::collide::kind;
+    let mut height = vec![f32::MIN; size * size];
+    let mut color = vec![[0.44f32, 0.52, 0.36]; size * size];
+    let scale = size as f32 / (2.0 * extent);
+    let l = {
+        let n = (sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]).sqrt();
+        [sun[0] / n, sun[1] / n, sun[2] / n]
+    };
+    for t in &world.tris {
+        let (a, b, c) = (t.v0, t.v0 + t.e1, t.v0 + t.e2);
+        let base: [f32; 3] = match t.kind {
+            kind::ROOF => [0.62, 0.3, 0.22],
+            kind::WALL => [0.8, 0.74, 0.62],
+            kind::STONE => [0.6, 0.6, 0.62],
+            kind::WOOD => [0.3, 0.44, 0.24],
+            kind::WATER => [0.25, 0.45, 0.62],
+            _ => [0.66, 0.64, 0.54],
+        };
+        // Lit by the sun on whichever side faces up.
+        let n = if t.n.y < 0.0 { [-t.n.x, -t.n.y, -t.n.z] } else { [t.n.x, t.n.y, t.n.z] };
+        let light = 0.55 + 0.6 * (n[0] * l[0] + n[1] * l[1] + n[2] * l[2]).max(0.0);
+        let px = |v: maneuver_sim::math::V3| ((v.x + extent) * scale, (v.z + extent) * scale);
+        let (pa, pb, pc) = (px(a), px(b), px(c));
+        let x0 = pa.0.min(pb.0).min(pc.0).floor().max(0.0) as usize;
+        let x1 = (pa.0.max(pb.0).max(pc.0).ceil() as isize).min(size as isize - 1);
+        let y0 = pa.1.min(pb.1).min(pc.1).floor().max(0.0) as usize;
+        let y1 = (pa.1.max(pb.1).max(pc.1).ceil() as isize).min(size as isize - 1);
+        let area = (pb.0 - pa.0) * (pc.1 - pa.1) - (pc.0 - pa.0) * (pb.1 - pa.1);
+        if area.abs() < 1e-6 || x1 < 0 || y1 < 0 {
+            continue;
+        }
+        for y in y0..=y1 as usize {
+            for x in x0..=x1 as usize {
+                let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+                let w0 = ((pb.0 - fx) * (pc.1 - fy) - (pc.0 - fx) * (pb.1 - fy)) / area;
+                let w1 = ((pc.0 - fx) * (pa.1 - fy) - (pa.0 - fx) * (pc.1 - fy)) / area;
+                let w2 = 1.0 - w0 - w1;
+                if w0 < -0.02 || w1 < -0.02 || w2 < -0.02 {
+                    continue;
+                }
+                let h = a.y * w0 + b.y * w1 + c.y * w2;
+                let o = y * size + x;
+                if h > height[o] {
+                    height[o] = h;
+                    color[o] = [base[0] * light, base[1] * light, base[2] * light];
+                }
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(16 + size * size * 2);
+    out.extend_from_slice(&(size as u32).to_le_bytes());
+    out.extend_from_slice(&(size as u32).to_le_bytes());
+    out.extend_from_slice(&extent.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    for c in &color {
+        let q = |x: f32, bits: u32| ((x.clamp(0.0, 1.0) * ((1 << bits) - 1) as f32) + 0.5) as u16;
+        let t = (q(c[0], 5) << 11) | (q(c[1], 6) << 5) | q(c[2], 5);
+        out.extend_from_slice(&t.to_le_bytes());
+    }
+    out
 }

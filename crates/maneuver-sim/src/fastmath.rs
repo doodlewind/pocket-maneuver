@@ -6,8 +6,10 @@
 //! in the last place of `libm`. A build that uses them is repeatable against
 //! itself, not bit-identical to the reference.
 
-const FRAC_2_PI: f32 = 0.636_619_8;
+use core::f32::consts::FRAC_2_PI;
+
 // π/2 in three parts, each exact in f32 times a small integer.
+#[allow(clippy::excessive_precision)]
 const DP1: f32 = 1.570_312_5;
 const DP2: f32 = 4.837_512_969_970_703e-4;
 const DP3: f32 = 7.549_789_948_768_648e-8;

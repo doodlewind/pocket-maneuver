@@ -206,7 +206,7 @@ pub struct HandMesh {
     pub clip_first: u32,
     /// The largest of their clip distances, in metres; 0 without large triangles.
     pub clip_radius: f32,
-    /// Positions dequantize as `min + (q + 32768) / 65535 × (max - min)`.
+    /// The mesh's bounds. PSP positions dequantize as `min + (q + 32768) / 65535 × (max - min)`.
     pub min: [f32; 3],
     pub max: [f32; 3],
     pub pad: u32,
@@ -223,8 +223,16 @@ pub struct PspVertex {
     pub pos: [i16; 3],
 }
 
+/// Metres per unit of a 3DS static vertex's position. Every cell's mesh is on
+/// one grid for the whole world, so a frame's draws share one transform and a
+/// vertex two meshes share lands on the same point in both.
+pub const PICA_STEP: f32 = 1.0 / 24.0;
+/// The same for the backdrop mesh, which reaches farther than that grid.
+pub const PICA_BACKDROP_STEP: f32 = 0.25;
+
 /// 3DS static vertex, 16 bytes: the same texture coordinates as `i16`, colour
-/// `u8 × 4`, position `i16 × 3` and a pad the loader reads as `w`.
+/// `u8 × 4`, position `i16 × 3` in `PICA_STEP` units from the world's origin,
+/// and a pad the loader reads as `w`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(C)]
 pub struct PicaVertex {
