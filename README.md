@@ -7,8 +7,8 @@ The player fires a wire from each hip into a wall or a roof, is pulled along it,
 | | Screen | Renderer | Measured |
 | --- | --- | --- | --- |
 | PS Vita | 960 × 544, 4× MSAA, bloom, light shafts, graded composite | GXM, programs compiled on the device | 90 s: 5 420 frames, **0 late**, up to 251 000 triangles |
-| Nintendo 3DS | 400 × 240, town map on the lower screen | PICA200 through citro3d | Old 3DS, 90 s: 5 417 frames, **3 late**, up to 54 800 triangles |
-| PSP | 480 × 272 | GE, fixed function | runs on the console; 37 fps before the CPU work below, not measured after it |
+| Nintendo 3DS | 400 × 240, town map on the lower screen | PICA200 through citro3d | Old 3DS, 60 s: 3 652 frames, **8 late** (0.2 %), up to 52 600 triangles |
+| PSP | 480 × 272, 16-bit with dither | GE, fixed function | PSP 2000, 60 s: 3 540 frames, **64 late** (1.8 %), up to 23 500 triangles |
 
 The repository holds the whole path from authoring to hardware:
 
@@ -70,17 +70,19 @@ What differs by profile:
 
 | | `vita60` | `psp60` | `n3ds60` |
 | --- | --- | --- | --- |
-| Atlas | 1024 × 2048 BC1, 8 levels | two 512 × 512 pages, DXT1 in the GE's block layout | two 512 × 512 pages, RGB565 in 8 × 8 Morton tiles |
+| Atlas | 1024 × 2048 BC1, 8 levels | two 512 × 512 pages, 8-bit indices and a 256-colour palette each, swizzled | two 512 × 512 pages, RGB565 in 8 × 8 Morton tiles |
 | Static vertex | 16 bytes, position over the mesh's bounds | 12 bytes in GE component order, colour 5650 | 16 bytes, position on one grid of 1/24 m for the whole world |
 | Detail distances | 160 m, 560 m | 44 m, 100 m, far cells to 480 m | 64 m, 170 m, far cells to 1 200 m |
 | Skinned models | two bones per vertex, one draw | draws of at most four bones, the GE's blend | two bones per vertex, one draw |
 | Collision | world file, grid built at load | grid stored built, read into place | world file, grid built at load |
-| Extra | | detailed cells in a section read on demand; a clip distance per large triangle | meshes grouped on shared vertex bases; the town from above |
-| Pack | 30.7 MB | 25.6 MB (15.8 MB read at start) | 27.3 MB |
+| Extra | | detailed cells in a section read on demand; large triangles in groups with a clip distance each | meshes grouped on shared vertex bases; the town from above |
+| Pack | 30.7 MB | 26.8 MB (17.1 MB read at start) | 27.3 MB |
 
 ## The handheld loop
 
 `crates/maneuver-handheld` is what the PSP and the 3DS share: which meshes a frame draws, the cloak, wires and soft discs as vertices, the interface as quads, the status record, and `Game::step` around the simulation.
+
+**Hidden giants** are not drawn. Each frame one giant beyond the near distance is tested against the town with three rays from the eye (head, chest, hip); a giant whose three are blocked stays undrawn until a later test sees it. In the town most of the giants in the frustum are behind houses.
 
 **The governor** counts late frames over each 60 frames. More than three pulls the middle and far distances in by 8 %; three windows in a row without one let them out by 4 %, between 55 % and 100 % of the profile's values. The near distance stays, so what is beside the player does not change. `govern=0` switches it off for a measurement.
 
@@ -104,28 +106,37 @@ From the heaviest fixed view, the world can be drawn twice per frame at 60 fps; 
 
 The GE has no programmable stage, 2 MB of video memory, a 16-bit depth buffer, textures up to 512 × 512, and the base console has 24 MB of memory. `psp/` (Rust on rust-psp, `no_std`) is built around those:
 
-- **Fixed function**: atlas texel × vertex colour × 2 (the GE's colour doubling), linear haze from 70 m to 500 m. Both atlas pages sit in video memory after the frame buffers. Skinned models take the sun and the sky as two directional lights.
-- **Two depth ranges**: cells beyond the near distance draw with a frustum from 35 m and the far quarter of the depth buffer; the cells around the eye, the character and the near giants draw with a frustum from 0.4 m to 224 m and the rest of it.
-- **Clipping on the CPU**: the GE clips against the near plane only and drops a triangle with a vertex outside its 4096-pixel coordinate space, so the ground under the camera disappears. The compiler sorts each mesh's triangles with an edge over 3 m to the end, largest first, with a distance per triangle. Inside that distance the runtime tests the triangle's clip coordinates and cuts it against a frustum twice the view's size (`maneuver_handheld::clip`). A frame tests 800 to 3 300 triangles and cuts under ten.
+- **Fixed function**: atlas texel × vertex colour × 2 (the GE's colour doubling), linear haze from 70 m to 500 m. Skinned models take the sun and the sky as two directional lights.
+- **Palette textures and a 16-bit frame buffer**: each atlas page is 8-bit indices into its own 256 colours (median cut), swizzled, in video memory; the frame buffer is 5650 with ordered dither. The GE reads a texel before it tests depth, so every covered pixel pays for its texture read: with DXT1 pages and a 32-bit buffer a street view's 13 000 world triangles took **16 ms** of GE time, with this pair **7 ms**.
+- **Two depth ranges**: the cells around the eye, the character and the near giants draw with a frustum from 0.4 m to 224 m and three quarters of the depth buffer; everything beyond draws with a frustum from 35 m and the last quarter; the sky draws last, at the far end, where nothing else was drawn.
+- **Clipping on the CPU**: the GE clips against the near plane only and drops a triangle with a vertex outside its 4096-pixel coordinate space, so the ground under the camera disappears. The compiler puts each mesh's triangles with an edge over 3 m at the end of its index list, in groups of neighbours (at most 4 × 4 over the mesh), the largest first inside a group, with a distance per triangle. The runtime measures its distance to each group and looks at the prefix that could reach the guard band from there: depth along the view decides most, the rest get their clip coordinates tested and are cut against a frustum twice the view's size (`maneuver_handheld::clip`). A frame looks at about 1 200 triangles and cuts under twenty.
 - **Cells on demand**: the detailed meshes (9.7 MB) stay in the pack. A second thread, lower in priority than the frame's, reads a cell (at most 48 KiB) into one of 16 buffers when the eye comes within 70 m; it runs while the frame waits for the GE. Until a cell arrives, its simple mesh draws.
 - **The frame overlaps the GE**: a frame builds its display list while the GE draws the previous one, then waits for it and swaps on the display refresh.
-- **Memory**: allocations of 64 KiB or more are kernel blocks of their exact size; smaller ones share one 2 MiB block.
+- **Memory**: allocations of 64 KiB or more are kernel blocks of their exact size; smaller ones share one 2 MiB block. The program holds 18.5 MB.
+- **Sound** at 11.025 kHz: the synthesizer costs about 3 µs a frame of sound on this CPU.
 
-`bun tools/psp.ts emu` runs the same PRX in PPSSPPHeadless with its software GE, which follows the console's clipping rule: with `option=4` (no CPU clipping) the ground under a low camera is missing there too. A street view draws about 25 000 triangles in 170 draws, an overview 16 000.
+`bun tools/psp.ts emu` runs the same PRX in PPSSPPHeadless with its software GE, which follows the console's clipping rule: with `option=4` (no CPU clipping) the ground under a low camera is missing there too.
 
-On a PSP (2000 series or later, 333 MHz) the pack's resident part loads in **0.9 s** over PSPLINK and the program holds **18.5 MB**. The first run measured **25 to 28 ms a frame** with the governor at its floor: the GE waited (0.5 to 4.5 ms left of its work when the CPU came back to it) and the CPU was the limit.
+Measured on a PSP (2000 series, 333 MHz) over PSPLINK, autopilot flying the route (`bun tools/psp.ts bench --seconds 60`):
 
-| Per frame | Measured | What was done after |
-| --- | --- | --- |
-| Simulation | 5.6–8.7 ms | the ray work above |
-| Sound | 1.7–3.5 ms | 11.025 kHz instead of 22.05 |
-| Detailed cells, with clip tests | 5.7–7.9 ms | depth along the view sorts a large triangle before any transform |
-| Interface | 2.2–2.9 ms | integer number formatting; statistics line every 20 frames |
-| Giants | 2.0–3.8 ms | far poses every third frame; lights from the encoding table |
-| Cloak, wires, discs | 0.6–1.8 ms | the sun ray every fourth tick |
-| Far meshes, mesh selection | 1.2–1.8 ms | |
+| Window | Frames | Late frames | Average frame | Worst frame | Most triangles | Most draws |
+| --- | --- | --- | --- | --- | --- | --- |
+| 60 s | 3 540 | 64 (1.8 %) | 17.0 ms | 33.3 ms | 23 525 | 201 |
 
-The frame time after that work is **not measured**: PSPLINK stopped answering when the tool reset it and sent the next command before the cable was back. `tools/psp.ts run` now waits for `usbhostfs_pc` to log a new connection.
+CPU time per frame: simulation 2.8 ms, sound 0.7 ms, display list 5.9 ms (of it the detailed cells with their clip tests 2.8 ms). The pack's resident part loads in 0.9 s.
+
+How it got there, from a first run at 25 to 28 ms a frame:
+
+| Change | Effect on the console |
+| --- | --- |
+| Palette pages and a 16-bit buffer instead of DXT1 and 32-bit | GE time for the world 16 ms → 7 ms |
+| Giants hidden by the town are not drawn (see the handheld loop) | 10 ms of GE time in a street with six hidden giants |
+| Rays skip cells and planes (see the simulation) | simulation 5.6–8.7 ms → 2.8 ms |
+| Large triangles in groups, a depth test before any transform | clip tests 5.7–7.9 ms → 2.8 ms |
+| Integer number formatting, the statistics line every 20 frames | interface 2.2–2.9 ms → 0.7 ms |
+| Sound at half the rate | 1.7–3.5 ms → 0.7 ms |
+
+Drawing front to back did not help: the GE does not skip the texture read of a pixel that fails the depth test.
 
 ## On the Nintendo 3DS
 
@@ -138,13 +149,13 @@ The frame time after that work is **not measured**: PSPLINK stopped answering wh
 - **Sound**: ndsp when the console has its DSP firmware dumped; otherwise a looping CSND buffer that the synthesizer writes ahead of the play position.
 - **The dev wire** is PocketJS's (`vendor/pocketjs/hosts/3ds`), compiled in: a `.3dsx` install replaces the running program, `maneuver.control` steers it, a screenshot request captures both screens.
 
-Measured on an Old 3DS (268 MHz), autopilot flying the route (`bun tools/n3ds.ts bench --seconds 90`):
+Measured on an Old 3DS (268 MHz), autopilot flying the route (`bun tools/n3ds.ts bench --seconds 60`):
 
 | Window | Frames | Late frames | Average frame | Worst frame | Most triangles | Most draws | Longest GPU time |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 90 s | 5 417 | 3 | 16.76 ms | 24.0 ms | 54 828 | 90 | 9.7 ms |
+| 60 s | 3 652 | 8 (0.2 %) | 16.70 ms | 24.3 ms | 52 619 | 60 | 8.8 ms |
 
-CPU time per frame: simulation, sound and mesh selection 2–4 ms, commands and moving geometry 2.4–3.0 ms. Before the ray work in the simulation (see above) the same run had 69 late frames: the ticks that search for an anchor.
+CPU time per frame: simulation, sound and mesh selection 2–4 ms, commands and moving geometry 2.4–3.0 ms. Before the ray work in the simulation (see above) a 90 s run had 69 late frames: the ticks that search for an anchor.
 
 ## Controls
 
@@ -213,7 +224,7 @@ Toolchains: VitaSDK and `cargo-vita`; rust-psp's `cargo psp` (PocketJS's pinned 
 
 ## Not done
 
-- **PSP at 60 fps.** The console ran at 37 fps before the CPU work listed above; whether that work reaches 16.7 ms has not been measured (`bun tools/psp.ts run`, then `bench`).
+- The PSP misses about one frame in fifty on the autopilot's route, in the densest streets.
 - The 3DS's CSND sound path and the PSP's sound have not been heard by a person; the Vita's sound has been checked for level, not by ear.
 - The numbers come from the autopilot. Wire pull, gas economy, reach and camera rates are set from simulated runs and have not been tuned by hand on a console.
 - No stereoscopic 3D on the 3DS: a second eye doubles the 8 to 10 ms of GPU time per frame.
