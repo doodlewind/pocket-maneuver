@@ -67,7 +67,6 @@ PS Vita (PCH-2000, CPU 444 MHz, GPU 222 MHz), development build in Pocket Devkit
 
 | Window | Frames | Late frames | Average frame | Worst frame | Most triangles | Most draws |
 | --- | --- | --- | --- | --- | --- | --- |
-| 120 s | 7 220 | 0 | 16.683 ms | 16.80 ms | 108 091 | 213 |
 | 180 s | 10 820 | 0 | 16.683 ms | 16.80 ms | 105 618 | 213 |
 
 CPU time per frame: simulation 0.5–1.0 ms, moving geometry and interface 1.0–1.4 ms, world submission 0.6 ms.
