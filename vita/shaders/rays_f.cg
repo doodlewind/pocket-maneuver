@@ -1,0 +1,18 @@
+// Light shafts: the bright image smeared toward the sun. The eight taps step
+// from the pixel toward the sun's place on the screen, fading.
+
+uniform sampler2D uSource;
+
+half4 main(float2 vUv0 : TEXCOORD0, float2 vUv1 : TEXCOORD1, float2 vUv2 : TEXCOORD2, float2 vUv3 : TEXCOORD3,
+    float2 vUv4 : TEXCOORD4, float2 vUv5 : TEXCOORD5, float2 vUv6 : TEXCOORD6, float2 vUv7 : TEXCOORD7) : COLOR
+{
+    half3 c = (half3)tex2D(uSource, vUv0).rgb * (half)0.20
+        + (half3)tex2D(uSource, vUv1).rgb * (half)0.17
+        + (half3)tex2D(uSource, vUv2).rgb * (half)0.15
+        + (half3)tex2D(uSource, vUv3).rgb * (half)0.13
+        + (half3)tex2D(uSource, vUv4).rgb * (half)0.11
+        + (half3)tex2D(uSource, vUv5).rgb * (half)0.09
+        + (half3)tex2D(uSource, vUv6).rgb * (half)0.08
+        + (half3)tex2D(uSource, vUv7).rgb * (half)0.07;
+    return half4(c, 1.0);
+}

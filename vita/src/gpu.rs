@@ -72,8 +72,6 @@ pub struct Gpu {
     /// Hashes of every program in use, for packaging.
     pub manifest: Vec<String>,
     live: bool,
-    /// The display surface's multisample mode; fragment programs are patched for it.
-    msaa: u32,
 }
 
 fn fnv64(parts: &[&[u8]]) -> u64 {
@@ -95,9 +93,9 @@ pub struct Layout<'a> {
 }
 
 impl Gpu {
-    pub unsafe fn new(live: bool, msaa: u32) -> Result<Gpu, String> {
+    pub unsafe fn new(live: bool) -> Result<Gpu, String> {
         let _ = std::fs::create_dir_all(paths::GXP_CACHE);
-        Ok(Gpu { patcher: Patcher::new(512 * 1024, 256 * 1024, 512 * 1024)?, compiler: None, compiled: 0, cached: 0, manifest: Vec::new(), live, msaa })
+        Ok(Gpu { patcher: Patcher::new(512 * 1024, 256 * 1024, 512 * 1024)?, compiler: None, compiled: 0, cached: 0, manifest: Vec::new(), live })
     }
 
     /// The GXP of a source: cached on the memory card, shipped in the package, or compiled now.
@@ -133,7 +131,7 @@ impl Gpu {
     }
 
     /// Compiles (or loads) a vertex and a fragment source and patches them for `layout`.
-    pub unsafe fn program(&mut self, name: &str, defines: &str, vs: &str, fs: &str, layout: &Layout) -> Result<Program, String> {
+    pub unsafe fn program(&mut self, name: &str, defines: &str, vs: &str, fs: &str, layout: &Layout, msaa: u32) -> Result<Program, String> {
         let vsrc = format!("{defines}{vs}");
         let fsrc = format!("{defines}{fs}");
         let vbytes = self.gxp(&format!("{name}_v"), &vsrc, Stage::Vertex)?;
@@ -146,8 +144,8 @@ impl Gpu {
             attrs.push(Attr { reg, offset: *offset, format: *format, count: *count, stream: 0 });
         }
         let vp = program::vertex_program(self.patcher.raw, &vs, &attrs, &[layout.stride])?;
-        let opaque = program::fragment_program(self.patcher.raw, &fs, Output::Uchar4, self.msaa, Blend::Opaque, vs.program())?;
-        let alpha = program::fragment_program(self.patcher.raw, &fs, Output::Uchar4, self.msaa, Blend::Alpha, vs.program())?;
+        let opaque = program::fragment_program(self.patcher.raw, &fs, Output::Uchar4, msaa, Blend::Opaque, vs.program())?;
+        let alpha = program::fragment_program(self.patcher.raw, &fs, Output::Uchar4, msaa, Blend::Alpha, vs.program())?;
         let u_mvp = vs.param("uMvp");
         let u_fog = vs.param("uFog");
         let u_bones = vs.param("uBones");
