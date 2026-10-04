@@ -36,7 +36,7 @@ const VOID: Rgb = [0.05, 0.03, 0.03];
 const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
 /** A giant of unit height. `cell` is the mesh resolution: about 1/120 up close, 1/36 far away. */
-export function buildTitan(variant: number, bind: Float32Array, cell: number): SkinModel {
+export function buildTitan(variant: number, bind: Float32Array, cell: number, inflate = 0): SkinModel {
   const v = BUILDS[variant % 3];
   const b = new Body(bind, 1, 0.02);
   const B = BONE;
@@ -120,7 +120,7 @@ export function buildTitan(variant: number, bind: Float32Array, cell: number): S
   b.paintEll(B.HEAD, [0, hr * 0.78, -hr * 0.98], [hr * 0.09, hr * 0.11, hr * 0.16], VOID);
 
   const out = new MeshOut();
-  b.mesh(out, cell);
+  b.mesh(out, cell, { inflate });
   // The coarse mesh keeps the silhouette and drops the small pieces.
   const fine = cell < 1 / 60;
 

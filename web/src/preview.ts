@@ -12,7 +12,8 @@ export async function preview(q: URLSearchParams, canvas: HTMLCanvasElement) {
   const sim = await Sim.load(await fetch("/sim/maneuver_sim.wasm"), null, 0);
   const name = q.get("model")!;
   const t0 = performance.now();
-  const model = name === "scout" ? buildScout(sim.bind(0)) : buildTitan(Number(name.slice(5)), sim.bind(1 + Number(name.slice(5))), Number(q.get("cell") ?? 1 / 100));
+  const cells = q.get("cells")?.split(",").map(Number) as [number, number] | undefined;
+  const model = name === "scout" ? buildScout(sim.bind(0), cells) : buildTitan(Number(name.slice(5)), sim.bind(1 + Number(name.slice(5))), Number(q.get("cell") ?? 1 / 100), Number(q.get("inflate") ?? 0));
   const ms = performance.now() - t0;
   const w = Number(q.get("w") ?? 960);
   const h = Number(q.get("h") ?? 544);

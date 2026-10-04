@@ -6,7 +6,7 @@
 // and two lanes; row houses line its four sides around a yard.
 
 import { STRIP, stripV } from "./atlas";
-import { ALL, at, emitHouse, frame, Frame, House, KIND, NEAR_MID, PLASTER, polar, ROOFS, World } from "./build";
+import { ALL, at, emitHouse, emitRowMass, FARS, frame, Frame, House, KIND, NEAR_MID, PLASTER, polar, ROOFS, World } from "./build";
 import { cross, Layer, norm, Rgb, sub, up, UP, V3 } from "./geo";
 import { fbm, hash01, Rng } from "./rng";
 
@@ -150,7 +150,7 @@ function ground(w: World, plan: Plan) {
   ]) {
     polarGround(w, [Layer.Near], r0, r1, 4, 4.6, (r, a) => surfaceAt(plan, r, a, 3), false);
     polarGround(w, [Layer.Mid], r0, r1, 12, 12, (r, a) => surfaceAt(plan, r, a, 4), true);
-    polarGround(w, [Layer.Far], r0, r1, 24, 40, (r, a) => surfaceAt(plan, r, a, 6), false);
+    polarGround(w, FARS, r0, r1, 24, 40, (r, a) => surfaceAt(plan, r, a, 6), false);
   }
 
   // Fields beyond the wall: a patchwork, with a road from each gate.
@@ -165,7 +165,7 @@ function ground(w: World, plan: Plan) {
   };
   const outer = R_WALL + WALL_T;
   polarGround(w, [Layer.Base], outer, outer + 16 * 34, 16, 20, field, true);
-  polarGround(w, [Layer.Far], outer, outer + 16 * 34, 68, 80, field, false);
+  polarGround(w, FARS, outer, outer + 16 * 34, 68, 80, field, false);
 }
 
 // ---------------------------------------------------------------------------- blocks and houses
@@ -212,14 +212,31 @@ function edgeFrame(p: V3, q: V3, inside: V3): { f: Frame; length: number } {
   return { f: { o: left, r, n }, length: Math.hypot(q[0] - p[0], q[2] - p[2]) };
 }
 
+/** Houses in one horizon mass: a run this long, or up to a gap. */
+const MASS_M = 34;
+
 function rowHouses(w: World, rng: Rng, f: Frame, from: number, to: number, depth: number, band: number, grand: boolean) {
   let x = from;
+  // The run of houses since the last gap, for the horizon layer.
+  let run: House[] = [];
+  let runFrom = from;
+  const flush = (end: number) => {
+    if (run.length > 0) {
+      const mean = (g: (h: House) => number) => run.reduce((n, h) => n + g(h) * h.w, 0) / run.reduce((n, h) => n + h.w, 0);
+      const tint = (g: (h: House) => Rgb): Rgb => [0, 1, 2].map((c) => mean((h) => g(h)[c])) as Rgb;
+      emitRowMass(w, { o: at(f, runFrom, 0, 0), r: f.r, n: f.n }, end - runFrom, mean((h) => h.d), mean((h) => h.storeys), mean((h) => h.rise) * 0.8, tint((h) => h.plaster), tint((h) => h.roof), run[0].seed);
+    }
+    run = [];
+    runFrom = end;
+  };
   while (to - x > 4.5) {
     let width = rng.range(5.6, 9.6);
     if (to - x - width < 5) width = to - x;
     if (rng.chance(0.035) && width < 8) {
       // A gap into the yard.
+      flush(x);
       x += width;
+      runFrom = x;
       continue;
     }
     const tall = band <= 1 ? rng.pick([3, 3, 4, 4]) : band <= 4 ? rng.pick([2, 3, 3, 4]) : rng.pick([2, 2, 3, 3]);
@@ -243,8 +260,11 @@ function rowHouses(w: World, rng: Rng, f: Frame, from: number, to: number, depth
       seed: rng.int(0, 1 << 30),
     };
     emitHouse(w, house);
+    run.push(house);
     x += width;
+    if (x - runFrom >= MASS_M) flush(x);
   }
+  flush(x);
 }
 
 function houses(w: World, plan: Plan, rng: Rng, special: Set<string>) {
@@ -328,13 +348,13 @@ function wall(w: World) {
     if (!gate) {
       w.stack([Layer.Base], key, i0, i1, 0, WALL_H, STRIP.STONE, STONE_DARK, KIND.STONE, 8, i * 0.31);
       w.stack([Layer.Base], key, o1, o0, 0, WALL_H, STRIP.STONE, STONE_DARK, KIND.STONE, 8, i * 0.17);
-      w.stack([Layer.Far], key, i0, i1, 0, WALL_H, STRIP.STONE, STONE_DARK, -1, 4, i * 0.31);
-      w.stack([Layer.Far], key, o1, o0, 0, WALL_H, STRIP.STONE, STONE_DARK, -1, 4, i * 0.17);
+      w.stack(FARS, key, i0, i1, 0, WALL_H, STRIP.STONE, STONE_DARK, -1, 4, i * 0.31);
+      w.stack(FARS, key, o1, o0, 0, WALL_H, STRIP.STONE, STONE_DARK, -1, 4, i * 0.17);
     } else {
       gateSegment(w, key, i * step, a0, a1);
     }
     // The walk on top, and a parapet on each edge.
-    w.floor([Layer.Base, Layer.Far], key, i0, i1, o1, o0, STRIP.STONE, STONE_LIGHT, KIND.GROUND, i * 0.4);
+    w.floor([Layer.Base, ...FARS], key, i0, i1, o1, o0, STRIP.STONE, STONE_LIGHT, KIND.GROUND, i * 0.4);
     for (const [ra, rb] of [
       [rin, rin + 0.7],
       [rout - 0.7, rout],
@@ -354,8 +374,8 @@ function wall(w: World) {
     const a = (k / 16) * TAU;
     const c = polar(rin + 2, a);
     const pts = w.ngon(c, 11, 8, a);
-    w.prism([Layer.Base, Layer.Far], c, pts, 0, WALL_H + 9, STRIP.STONE, STONE_LIGHT, KIND.STONE, { rows: 5 });
-    w.spire([Layer.Base, Layer.Far], c, pts, WALL_H + 9, 13, [0.5, 0.36, 0.3]);
+    w.prism([Layer.Base, ...FARS], c, pts, 0, WALL_H + 9, STRIP.STONE, STONE_LIGHT, KIND.STONE, { rows: 5 });
+    w.spire([Layer.Base, ...FARS], c, pts, WALL_H + 9, 13, [0.5, 0.36, 0.3]);
   }
 }
 
@@ -365,7 +385,7 @@ function gateSegment(w: World, key: V3, a: number, a0: number, a1: number) {
   const rout = R_WALL + WALL_T;
   const half = 5;
   const high = 11;
-  const base: readonly Layer[] = [Layer.Base, Layer.Far];
+  const base: readonly Layer[] = [Layer.Base, ...FARS];
   // The passage runs along the radius at `a`; `t` is the tangent.
   const rad: V3 = [Math.cos(a), 0, Math.sin(a)];
   const t: V3 = [-Math.sin(a), 0, Math.cos(a)];
@@ -388,7 +408,7 @@ function gateSegment(w: World, key: V3, a: number, a0: number, a1: number) {
   w.stack(base, key, P(rin, -half), P(rout, -half), 0, high, STRIP.STONE, shade, KIND.STONE, 2);
   w.stack(base, key, P(rout, half), P(rin, half), 0, high, STRIP.STONE, shade, KIND.STONE, 2);
   w.floor(base, key, up(P(rin, half), high), up(P(rin, -half), high), up(P(rout, -half), high), up(P(rout, half), high), STRIP.STONE, shade, KIND.STONE);
-  w.floor([Layer.Base, Layer.Far], key, P(rin, -half), P(rin, half), P(rout, half), P(rout, -half), STRIP.COBBLE, [0.9, 0.88, 0.85], KIND.GROUND);
+  w.floor([Layer.Base, ...FARS], key, P(rin, -half), P(rin, half), P(rout, half), P(rout, -half), STRIP.COBBLE, [0.9, 0.88, 0.85], KIND.GROUND);
   // The gatehouse: a block across the wall, with a flat fighting top.
   const pts = [P(rout + 5, -13), P(rin - 5, -13), P(rin - 5, 13), P(rout + 5, 13)];
   // Order for `prism`: angles growing from +X toward +Z around the footprint.
@@ -461,7 +481,7 @@ function canal(w: World, plan: Plan) {
 
 const SLATE: Rgb = [0.4, 0.43, 0.5];
 const COPPER: Rgb = [0.42, 0.62, 0.55];
-const BASE_FAR: readonly Layer[] = [Layer.Base, Layer.Far];
+const BASE_FAR: readonly Layer[] = [Layer.Base, ...FARS];
 
 /** A frame for a building in a block: fronted on the block's inner edge, centred, facing the town centre. */
 function blockFrame(blk: Block, width: number, setback: number): Frame {

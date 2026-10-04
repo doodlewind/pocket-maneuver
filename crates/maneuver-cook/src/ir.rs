@@ -17,6 +17,8 @@ pub mod layer {
     pub const MID: i32 = 2;
     pub const FAR: i32 = 3;
     pub const BACKDROP: i32 = 4;
+    /// The far layer for the handhelds, in 128 m cells.
+    pub const HORIZON: i32 = 5;
 }
 
 #[derive(Deserialize)]

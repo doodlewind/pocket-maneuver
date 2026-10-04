@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["crates/maneuver-sim", "crates/maneuver-pack", "crates/maneuver-cook"]
-# The Vita app builds with its own toolchain file and lockfile.
-exclude = ["vita", "vendor"]
+members = ["crates/maneuver-sim", "crates/maneuver-pack", "crates/maneuver-cook", "crates/maneuver-handheld"]
+# The device apps build with their own toolchains and lockfiles.
+exclude = ["vita", "psp", "n3ds", "vendor"]
 
 [profile.release]
 opt-level = 3

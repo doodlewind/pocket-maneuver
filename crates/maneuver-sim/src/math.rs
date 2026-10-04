@@ -1,38 +1,97 @@
 //! Scalar f32 math. Transcendentals go through `libm` so the wasm build, the
 //! host build and the Vita build produce the same bits for the same inputs.
+//!
+//! Two features change that for small machines. `hw-sqrt` takes the square
+//! root from the FPU (the same bits as `libm`, without its loop).
+//! `single-float` swaps the transcendentals for kernels that never use `f64`
+//! (`fastmath`): the results differ from `libm` in the last places, so such a
+//! build repeats against itself only.
 
 use core::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
 pub const PI: f32 = core::f32::consts::PI;
 pub const TAU: f32 = core::f32::consts::TAU;
 
+#[cfg(not(feature = "single-float"))]
+mod kernel {
+    #[inline]
+    pub fn sin(x: f32) -> f32 {
+        libm::sinf(x)
+    }
+    #[inline]
+    pub fn cos(x: f32) -> f32 {
+        libm::cosf(x)
+    }
+    #[inline]
+    pub fn tan(x: f32) -> f32 {
+        libm::tanf(x)
+    }
+    #[inline]
+    pub fn atan2(y: f32, x: f32) -> f32 {
+        libm::atan2f(y, x)
+    }
+    #[inline]
+    pub fn asin(x: f32) -> f32 {
+        libm::asinf(x)
+    }
+    #[inline]
+    pub fn acos(x: f32) -> f32 {
+        libm::acosf(x)
+    }
+    #[inline]
+    pub fn exp(x: f32) -> f32 {
+        libm::expf(x)
+    }
+}
+
+#[cfg(feature = "single-float")]
+mod kernel {
+    pub use crate::fastmath::{atan2, cos, exp, sin, tan};
+    #[inline]
+    pub fn asin(x: f32) -> f32 {
+        crate::fastmath::asin(x, super::sqrt)
+    }
+    #[inline]
+    pub fn acos(x: f32) -> f32 {
+        core::f32::consts::FRAC_PI_2 - asin(x)
+    }
+}
+
 #[inline]
 pub fn sin(x: f32) -> f32 {
-    libm::sinf(x)
+    kernel::sin(x)
 }
 #[inline]
 pub fn cos(x: f32) -> f32 {
-    libm::cosf(x)
+    kernel::cos(x)
 }
 #[inline]
 pub fn tan(x: f32) -> f32 {
-    libm::tanf(x)
+    kernel::tan(x)
 }
 #[inline]
 pub fn atan2(y: f32, x: f32) -> f32 {
-    libm::atan2f(y, x)
+    kernel::atan2(y, x)
 }
 #[inline]
 pub fn asin(x: f32) -> f32 {
-    libm::asinf(clamp(x, -1.0, 1.0))
+    kernel::asin(clamp(x, -1.0, 1.0))
 }
+#[cfg(not(feature = "hw-sqrt"))]
 #[inline]
 pub fn sqrt(x: f32) -> f32 {
     libm::sqrtf(x)
 }
+#[cfg(feature = "hw-sqrt")]
+#[inline]
+#[allow(unused_unsafe)]
+pub fn sqrt(x: f32) -> f32 {
+    // Safe on current compilers, `unsafe` on older ones.
+    unsafe { core::intrinsics::sqrtf32(x) }
+}
 #[inline]
 pub fn exp(x: f32) -> f32 {
-    libm::expf(x)
+    kernel::exp(x)
 }
 #[inline]
 pub fn floor(x: f32) -> f32 {
@@ -427,5 +486,5 @@ impl M3 {
 
 #[inline]
 pub fn acos(x: f32) -> f32 {
-    libm::acosf(clamp(x, -1.0, 1.0))
+    kernel::acos(clamp(x, -1.0, 1.0))
 }

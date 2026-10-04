@@ -1,0 +1,23 @@
+[package]
+name = "pocket-maneuver-psp"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pocket Maneuver on PSP: the GE renderer, on-demand cells and the device loop"
+
+# cargo-psp builds a lone crate.
+[workspace]
+
+[dependencies]
+psp = { git = "https://github.com/pocket-nexus/rust-psp.git", rev = "2cbaf8c9bc72569c76240a1d9743de10731e5f6b", features = ["abort-only", "external-global-alloc"] }
+# The Allegrex FPU has no doubles: single-precision kernels and its own square root.
+maneuver-sim = { path = "../crates/maneuver-sim", default-features = false, features = ["hw-sqrt", "single-float"] }
+maneuver-pack = { path = "../crates/maneuver-pack", default-features = false }
+maneuver-handheld = { path = "../crates/maneuver-handheld", default-features = false }
+libm = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

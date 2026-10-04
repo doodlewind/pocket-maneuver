@@ -1,14 +1,18 @@
 //! World compiler: WorldIR in, device pack out.
 //!
 //! Passes, in order (`RECIPE`): read-source, bake-lighting, merge-cells,
-//! quantize, atlas-mips-bc1, interface-font, structural-budgets. The compile
+//! quantize, atlas-mips, interface-font, structural-budgets. The compile
 //! receipt next to the pack records the source, the profile, every section's
 //! size and hash, and the statistics a frame budget is argued from.
+//!
+//! The profile's `target` picks the lowering: `vita` (this file), or `psp` and
+//! `3ds` (`handheld`).
 //!
 //! `maneuver-cook --in <WorldIR dir> --out <pack> --profile <json> --font <ttf>`
 
 mod bake;
 mod font;
+mod handheld;
 mod ir;
 mod texture;
 
@@ -21,7 +25,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
-const RECIPE: &[(&str, u32)] = &[("read-source", 1), ("bake-lighting", 1), ("merge-cells", 1), ("quantize", 1), ("atlas-mips-bc1", 1), ("interface-font", 1), ("structural-budgets", 1)];
+const RECIPE: &[(&str, u32)] = &[("read-source", 1), ("bake-lighting", 1), ("merge-cells", 1), ("quantize", 1), ("atlas-mips", 1), ("interface-font", 1), ("structural-budgets", 1)];
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -33,6 +37,9 @@ struct Profile {
     bake: BakeProfile,
     limits: Limits,
     font: FontProfile,
+    /// Present for the `psp` and `3ds` targets.
+    #[serde(default)]
+    handheld: Option<handheld::Handheld>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -139,8 +146,10 @@ fn lower(parts: &[(&Mesh, &Vec<[u8; 4]>)], kind: u32, cx: i32, cz: i32, limit: u
 
 fn models(ir: &ir::Ir) -> Result<Vec<u8>, String> {
     const S: usize = ir::SKIN_STRIDE;
-    let mut out = (ir.models.len() as u32).to_le_bytes().to_vec();
-    for m in &ir.models {
+    // The detailed player, and the giants' builds at the two densities the Vita draws.
+    let mine: Vec<&Mesh> = ir.models.iter().filter(|m| matches!(m.head[0], 0 | 10..=12 | 20..=22)).collect();
+    let mut out = (mine.len() as u32).to_le_bytes().to_vec();
+    for m in mine {
         let nv = m.verts.len() / S;
         if nv > 65535 {
             return Err(format!("model {} has {nv} vertices; indices are 16-bit", m.head[0]));
@@ -179,9 +188,12 @@ fn run() -> Result<(), String> {
     let t_all = Instant::now();
     let profile_bytes = std::fs::read(&profile_path).map_err(|e| format!("{}: {e}", profile_path.display()))?;
     let profile: Profile = serde_json::from_slice(&profile_bytes).map_err(|e| format!("{}: {e}", profile_path.display()))?;
-    if profile.target != "vita" || profile.texture.format != "bc1" {
-        return Err(format!("profile {}: this compiler lowers for target vita with bc1 textures", profile.name));
-    }
+    let hand = match (profile.target.as_str(), &profile.handheld) {
+        ("vita", None) if profile.texture.format == "bc1" => None,
+        ("psp", Some(h)) => Some((handheld::Target::Psp, h.clone())),
+        ("3ds", Some(h)) => Some((handheld::Target::Pica, h.clone())),
+        _ => return Err(format!("profile {}: target is vita (bc1 textures, no handheld block), psp or 3ds (with a handheld block)", profile.name)),
+    };
     let ir = ir::load(&input)?;
     let sim = maneuver_sim::worldfile::load(&ir.world).map_err(|e| format!("world.mvsw: {e}"))?;
 
@@ -198,20 +210,30 @@ fn run() -> Result<(), String> {
     for (i, b) in ir.buckets.iter().enumerate() {
         match b.head[0] {
             layer::BASE | layer::NEAR | layer::MID => cells.entry((b.head[2], b.head[1])).or_default()[b.head[0] as usize].push(i),
-            layer::FAR => plan.push((mesh_kind::FAR, b.head[1], b.head[2], vec![i])),
+            // A handheld's far meshes are the horizon layer's; the Vita's are the far layer's.
+            layer::FAR if hand.is_none() => plan.push((mesh_kind::FAR, b.head[1], b.head[2], vec![i])),
+            layer::HORIZON if hand.is_some() => plan.push((mesh_kind::FAR, b.head[1], b.head[2], vec![i])),
+            layer::FAR | layer::HORIZON => {}
             layer::BACKDROP => plan.push((mesh_kind::BACKDROP, 0, 0, vec![i])),
             l => return Err(format!("unknown layer {l}")),
         }
     }
     for ((cz, cx), [base, near, mid]) in &cells {
-        plan.push((mesh_kind::NEAR, *cx, *cz, base.iter().chain(near).copied().collect()));
         // A cell with nothing but base geometry has one mesh; the runtime draws it at every distance.
-        if !near.is_empty() || !mid.is_empty() {
+        // A handheld keeps that one as the simple mesh, which is always in memory.
+        let plain = near.is_empty() && mid.is_empty();
+        if !(plain && hand.is_some()) {
+            plan.push((mesh_kind::NEAR, *cx, *cz, base.iter().chain(near).copied().collect()));
+        }
+        if !plain || hand.is_some() {
             plan.push((mesh_kind::MID, *cx, *cz, base.iter().chain(mid).copied().collect()));
         }
     }
     plan.sort_by_key(|p| (p.0, p.2, p.1));
     let limit = profile.limits.max_mesh_vertices;
+    if let Some((target, h)) = hand {
+        return cook_handheld(Cooked { profile: &profile, profile_bytes: &profile_bytes, ir: &ir, sim: &sim, colors: &colors, plan: &plan, bake_ms, output: &output, font_path: &font_path, t_all }, target, &h);
+    }
     let lowered: Vec<Vec<OutMesh>> = plan
         .par_iter()
         .map(|(kind, cx, cz, parts)| {
@@ -311,6 +333,121 @@ fn run() -> Result<(), String> {
     std::fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", receipt_path.display()))?;
     println!("{}: {:.1} MB, {} meshes, {} vertices; bake {bake_ms} ms, lower {lower_ms} ms, textures {tex_ms} ms", output.display(), bytes.len() as f64 / 1e6, recs.len(), vtx.len());
     println!("triangles: near {} mid {} far {} backdrop {}; largest mesh {} vertices", tris[0], tris[1], tris[2], tris[3], max_verts);
+    Ok(())
+}
+
+struct Cooked<'a> {
+    profile: &'a Profile,
+    profile_bytes: &'a [u8],
+    ir: &'a ir::Ir,
+    sim: &'a maneuver_sim::Sim,
+    colors: &'a [Vec<[u8; 4]>],
+    plan: &'a [(u32, i32, i32, Vec<usize>)],
+    bake_ms: u128,
+    output: &'a PathBuf,
+    font_path: &'a PathBuf,
+    t_all: Instant,
+}
+
+fn cook_handheld(c: Cooked, target: handheld::Target, h: &handheld::Handheld) -> Result<(), String> {
+    let (profile, ir) = (c.profile, c.ir);
+    let format = handheld::format_of(&profile.texture.format)?;
+    let psp = target == handheld::Target::Psp;
+    if psp != matches!(format, pack::tex_format::PSP_DXT1 | pack::tex_format::PSP_5650) {
+        return Err(format!("profile {}: texture format {} is not one of target {}", profile.name, profile.texture.format, profile.target));
+    }
+
+    // atlas-mips
+    let t = Instant::now();
+    let (tex, pages, mips) = handheld::atlas(&ir.atlas, ir.scene.atlas.width, ir.scene.atlas.height, &ir.scene.atlas.strip_edges, h.page, format, profile.texture.max_mips)?;
+    let ttf = std::fs::read(c.font_path).map_err(|e| format!("{}: {e}", c.font_path.display()))?;
+    let font = handheld::font(&font::bake(&ttf, &profile.font.sizes, profile.font.atlas[0], profile.font.atlas[1])?, target)?;
+    let tex_ms = t.elapsed().as_millis();
+
+    // merge-cells + quantize
+    let t = Instant::now();
+    let limit = profile.limits.max_mesh_vertices;
+    let lowered: Vec<Vec<handheld::Lowered>> = c
+        .plan
+        .par_iter()
+        .map(|(kind, cx, cz, parts)| {
+            let parts: Vec<(&Mesh, &Vec<[u8; 4]>)> = parts.iter().map(|&i| (&ir.buckets[i], &c.colors[i])).collect();
+            handheld::lower(&parts, *kind, *cx, *cz, h, pages, target, limit)
+        })
+        .collect::<Result<_, _>>()?;
+    let vertex_bytes = if psp { core::mem::size_of::<pack::PspVertex>() } else { core::mem::size_of::<pack::PicaVertex>() };
+    let geo = handheld::assemble(lowered, h.stream_near, vertex_bytes);
+    let lower_ms = t.elapsed().as_millis();
+
+    let (model_bytes, model_stats) = handheld::models(ir, &h.models, target)?;
+    // The PSP reads the collision grid as built; the 3DS has the memory to build it and a 32 MiB package to fit.
+    let simg = if psp { maneuver_sim::worldfile::write_built(c.sim) } else { ir.world.clone() };
+    let scene = handheld::scene(&ir.scene_json, h, profile.presentation.render, pages, c.sim.dummies.len() as u32)?;
+
+    let stats = json!({
+        "meshes": {"near": geo.count[0], "mid": geo.count[1], "far": geo.count[2], "backdrop": geo.count[3]},
+        "triangles": {"near": geo.tris[0], "mid": geo.tris[1], "far": geo.tris[2], "backdrop": geo.tris[3]},
+        "largeTriangles": geo.big,
+        "residentVertexBytes": geo.vtx.len(),
+        "residentIndices": geo.idx.len(),
+        "onDemandBytes": geo.near.len(),
+        "largestOnDemandCell": geo.largest_cell,
+        "maxMeshVertices": geo.max_verts,
+        "collisionTriangles": c.sim.world.tris.len(),
+        "atlas": {"pages": pages, "page": h.page, "mips": mips, "format": profile.texture.format},
+        "models": model_stats,
+    });
+    let meta = json!({
+        "name": ir.manifest.name,
+        "seed": ir.manifest.seed,
+        "source": ir.manifest_sha256,
+        "profile": profile.name,
+        "target": profile.target,
+        "presentation": {"render": profile.presentation.render, "display": profile.presentation.display, "targetFps": profile.presentation.target_fps},
+        "stats": stats,
+    });
+    let meta_bytes = serde_json::to_vec(&meta).map_err(|e| e.to_string())?;
+    let mut sections: Vec<(u32, &[u8])> = vec![
+        (pack::META, &meta_bytes),
+        (pack::HSCN, pack::bytes_of(&scene)),
+        (pack::TEX0, &tex),
+        (pack::HMSH, pack::slice_bytes(&geo.recs)),
+        (pack::VTX0, &geo.vtx),
+        (pack::IDX0, pack::slice_bytes(&geo.idx)),
+        (pack::CLIP, &geo.clip),
+        (pack::MODL, &model_bytes),
+        (pack::FONT, &font),
+        (if psp { pack::SIMG } else { pack::SIMW }, &simg),
+    ];
+    if h.stream_near {
+        // Last, so the sections a runtime reads at start are contiguous.
+        sections.push((pack::NEAR, &geo.near));
+    }
+    let bytes = pack::write(&sections);
+    if bytes.len() > profile.limits.max_pack_bytes {
+        return Err(format!("the pack is {} bytes; the profile allows {}", bytes.len(), profile.limits.max_pack_bytes));
+    }
+    pack::Pack::parse(&bytes)?;
+
+    let temp = c.output.with_extension("tmp");
+    std::fs::write(&temp, &bytes).map_err(|e| format!("{}: {e}", temp.display()))?;
+    std::fs::rename(&temp, c.output).map_err(|e| format!("{}: {e}", c.output.display()))?;
+    let receipt = json!({
+        "compiler": {"name": env!("CARGO_PKG_NAME"), "version": env!("CARGO_PKG_VERSION"), "packVersion": pack::VERSION},
+        "recipe": RECIPE.iter().map(|(n, v)| json!({"pass": n, "version": v})).collect::<Vec<_>>(),
+        "source": {"name": ir.manifest.name, "seed": ir.manifest.seed, "manifestSha256": ir.manifest_sha256},
+        "profile": {"name": profile.name, "sha256": ir::sha256(c.profile_bytes)},
+        "artifact": {"path": c.output.file_name().map(|s| s.to_string_lossy()), "bytes": bytes.len(), "sha256": ir::sha256(&bytes)},
+        "sections": sections.iter().map(|(t, d)| json!({"tag": String::from_utf8_lossy(&t.to_le_bytes()), "bytes": d.len(), "sha256": ir::sha256(d)})).collect::<Vec<_>>(),
+        "stats": stats,
+        "frameBudget": {"fps": profile.presentation.target_fps, "milliseconds": 1000.0 / profile.presentation.target_fps as f64},
+        "timingsMs": {"bake": c.bake_ms, "lower": lower_ms, "textures": tex_ms, "total": c.t_all.elapsed().as_millis()},
+    });
+    let receipt_path = PathBuf::from(format!("{}.compile.json", c.output.display()));
+    std::fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", receipt_path.display()))?;
+    let resident = bytes.len() - geo.near.len();
+    println!("{}: {:.1} MB ({:.1} MB read at start, {:.1} MB on demand), {} meshes", c.output.display(), bytes.len() as f64 / 1e6, resident as f64 / 1e6, geo.near.len() as f64 / 1e6, geo.recs.len());
+    println!("triangles: near {} mid {} far {} backdrop {}; {} large; largest mesh {} vertices", geo.tris[0], geo.tris[1], geo.tris[2], geo.tris[3], geo.big, geo.max_verts);
     Ok(())
 }
 

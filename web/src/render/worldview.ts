@@ -95,7 +95,8 @@ export class WorldView {
       return m;
     };
     for (const b of meshes.sorted()) {
-      if (b.geo.ni === 0) continue;
+      // The horizon layer is for the handheld packs.
+      if (b.geo.ni === 0 || b.layer === Layer.Horizon) continue;
       const m = mesh(b);
       if (b.layer === Layer.Backdrop) {
         m.frustumCulled = false;

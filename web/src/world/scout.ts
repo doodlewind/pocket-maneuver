@@ -32,7 +32,8 @@ export const CLOAK_COLOR = CLOAK;
 /** The blade's tip in the hand's frame (`BLADE_TIP` in crates/maneuver-sim/src/pose.rs). */
 const BLADE_TIP: V3 = [0, -0.52, -0.78];
 
-export function buildScout(bind: Float32Array): SkinModel {
+/** `cells` are the mesh cell sizes of the body and of the head, in metres; a coarser pair is a handheld's model. */
+export function buildScout(bind: Float32Array, cells: [number, number] = [0.014, 0.008]): SkinModel {
   const b = new Body(bind);
   const B = BONE;
 
@@ -115,8 +116,8 @@ export function buildScout(bind: Float32Array): SkinModel {
 
   const out = new MeshOut();
   const neck = b.joint(B.HEAD)[1] - 0.02;
-  b.mesh(out, 0.014, { yMax: neck + 0.014 });
-  b.mesh(out, 0.008, { yMin: neck - 0.008 });
+  b.mesh(out, cells[0], { yMax: neck + cells[0] });
+  b.mesh(out, cells[1], { yMin: neck - cells[1] });
 
   face(out, b);
   hair(out, b);

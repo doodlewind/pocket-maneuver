@@ -4,6 +4,9 @@
 //! points to) and two-sided for rays. The world compiler emits only exterior
 //! faces, so the front of every triangle faces open air.
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::math::*;
 
 /// Surface kinds, shared with the world generator (`web/src/world/kinds.ts`).
@@ -28,6 +31,7 @@ pub mod mask {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[repr(C)]
 pub struct Tri {
     pub v0: V3,
     pub e1: V3,
@@ -75,6 +79,26 @@ const BACK: f32 = 0.3;
 impl World {
     pub fn empty() -> World {
         World { tris: Vec::new(), cell: CELL, inv_cell: 1.0 / CELL, min_x: 0.0, min_z: 0.0, nx: 1, nz: 1, start: vec![0, 0], items: Vec::new() }
+    }
+
+    /// The grid as built: triangles, cell starts, cell items, then `min_x`, `min_z`, `nx`, `nz`.
+    pub fn raw(&self) -> (&[Tri], &[u32], &[u32], f32, f32, i32, i32) {
+        (&self.tris, &self.start, &self.items, self.min_x, self.min_z, self.nx, self.nz)
+    }
+
+    /// A world from the parts `raw` returns, checked for consistency. A device with
+    /// little memory loads the grid a compiler built instead of building it.
+    pub fn from_raw(tris: Vec<Tri>, start: Vec<u32>, items: Vec<u32>, min_x: f32, min_z: f32, nx: i32, nz: i32) -> Result<World, &'static str> {
+        if nx < 1 || nz < 1 || start.len() != (nx as usize) * (nz as usize) + 1 {
+            return Err("collision grid has the wrong number of cells");
+        }
+        if start[0] != 0 || start.windows(2).any(|w| w[0] > w[1]) || start[start.len() - 1] as usize != items.len() {
+            return Err("collision grid cell ranges are inconsistent");
+        }
+        if items.iter().any(|&i| i as usize >= tris.len()) {
+            return Err("collision grid item out of range");
+        }
+        Ok(World { tris, cell: CELL, inv_cell: 1.0 / CELL, min_x, min_z, nx, nz, start, items })
     }
 
     /// Builds the grid over `verts` (xyz) and `idx` (three per triangle).

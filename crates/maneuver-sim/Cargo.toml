@@ -8,5 +8,22 @@ description = "Deterministic simulation core of Pocket Maneuver: collision world
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["std"]
+# Without `std` the crate needs only `core` and `alloc` (the PSP build).
+std = []
+# The FPU's square root instead of libm's loop (the same bits; needs a nightly compiler).
+hw-sqrt = []
+# Transcendentals that never use f64, for an FPU without doubles (the PSP). Not bit-identical to libm.
+single-float = []
+
+[[bin]]
+name = "abi"
+required-features = ["std"]
+
+[[bin]]
+name = "harness"
+required-features = ["std"]
+
 [dependencies]
 libm = "0.2"

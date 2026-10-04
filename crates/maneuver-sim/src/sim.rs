@@ -5,6 +5,8 @@
 //! pull), compressed-gas thrust and ground contact. All state lives in `Sim`;
 //! the same inputs produce the same state on every target.
 
+use alloc::vec::Vec;
+
 use crate::collide::{kind, mask, Contact, Hit, World};
 use crate::math::*;
 use crate::pose::{Pose, PoseIn, Skeleton, BONES};

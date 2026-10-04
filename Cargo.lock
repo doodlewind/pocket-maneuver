@@ -168,6 +168,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "maneuver-handheld"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "maneuver-pack",
+ "maneuver-sim",
+]
+
+[[package]]
 name = "maneuver-pack"
 version = "0.1.0"
 

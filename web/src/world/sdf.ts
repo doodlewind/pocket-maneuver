@@ -264,16 +264,19 @@ export class Body {
   /**
    * Polygonizes the body with surface nets at `cell` units and appends it to
    * `out`. `clip` limits the height range, so a part (the head) can be meshed
-   * finer than the rest; the cut edges are left open.
+   * finer than the rest; the cut edges are left open. `inflate` moves the
+   * surface outward by that distance, which keeps limbs thinner than a coarse
+   * cell from breaking up.
    */
-  mesh(out: MeshOut, cell: number, clip: { yMin?: number; yMax?: number } = {}) {
+  mesh(out: MeshOut, cell: number, clip: { yMin?: number; yMax?: number; inflate?: number } = {}) {
     const adds = this.prims.filter((p) => p.op === ADD);
     const min: V3 = [Math.min(...adds.map((p) => p.lo[0])), clip.yMin ?? Math.min(...adds.map((p) => p.lo[1])), Math.min(...adds.map((p) => p.lo[2]))];
     const max: V3 = [Math.max(...adds.map((p) => p.hi[0])), clip.yMax ?? Math.max(...adds.map((p) => p.hi[1])), Math.max(...adds.map((p) => p.hi[2]))];
     const n = [0, 1, 2].map((a) => Math.ceil((max[a] - min[a]) / cell) + 2);
     const [nx, ny, nz] = n;
+    const inflate = clip.inflate ?? 0;
     const f = new Float32Array(nx * ny * nz);
-    for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) f[(k * ny + j) * nx + i] = this.eval(min[0] + i * cell, min[1] + j * cell, min[2] + k * cell);
+    for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) f[(k * ny + j) * nx + i] = this.eval(min[0] + i * cell, min[1] + j * cell, min[2] + k * cell) - inflate;
     // One vertex per cell the surface crosses, at the mean of its edge crossings.
     const index = new Int32Array(nx * ny * nz).fill(-1);
     const weights = new Float64Array(64);

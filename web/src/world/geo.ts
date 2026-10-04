@@ -8,10 +8,17 @@ export type Rgb = readonly [number, number, number];
 export const CELL = 64;
 /** Far cells: one merged low-detail mesh. */
 export const SUPER = 256;
+/** Cells of the horizon layer. */
+export const HORIZON = 128;
 
 /**
  * Render layers. A near cell draws `Base + Near` or `Base + Mid` by distance;
  * beyond that its super-cell draws `Far`.
+ *
+ * `Horizon` is a second far layer for machines that draw a tenth of the
+ * triangles (PSP, 3DS): the same ground, wall and landmarks as `Far`, with
+ * each run of houses merged into one long roofed mass. The reference and the
+ * Vita pack do not use it.
  */
 export const enum Layer {
   Base = 0,
@@ -20,6 +27,7 @@ export const enum Layer {
   Far = 3,
   /** One mesh that is always drawn: the horizon. */
   Backdrop = 4,
+  Horizon = 5,
 }
 
 export const add = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -122,7 +130,7 @@ export class Meshes {
 
   /** The bucket of `layer` for the cell that contains `(x, z)`. */
   at(layer: Layer, x: number, z: number): Geo {
-    const size = layer === Layer.Far ? SUPER : CELL;
+    const size = layer === Layer.Far ? SUPER : layer === Layer.Horizon ? HORIZON : CELL;
     const cx = layer === Layer.Backdrop ? 0 : Math.floor(x / size);
     const cz = layer === Layer.Backdrop ? 0 : Math.floor(z / size);
     const key = `${layer}:${cx}:${cz}`;

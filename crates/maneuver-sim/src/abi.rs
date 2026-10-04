@@ -3,6 +3,9 @@
 //! A snapshot is one `f32` array. `layout!` assigns the offsets; the `abi`
 //! binary prints them as TypeScript so the reference never hand-copies one.
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::math::*;
 use crate::pose::{BONES, CLOAK_N, ROPE_N};
 use crate::sim::{Input, Sim};
