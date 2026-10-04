@@ -1,0 +1,19 @@
+// The static world. Positions arrive normalized over the mesh's bounds; the
+// bounds are folded into uMvp, so a draw uploads one matrix. Haze is a
+// function of view depth, computed per vertex.
+
+void main(
+    float3 aPosition,
+    float2 aUv,
+    float4 aColor,
+    uniform float4x4 uMvp,
+    out float4 oPosition : POSITION,
+    out float2 oUv : TEXCOORD0,
+    out float4 oColor : TEXCOORD1)
+{
+    float4 clip = mul(uMvp, float4(aPosition, 1.0));
+    oPosition = clip;
+    oUv = aUv * float2(UV_SCALE, 1.0);
+    float d = clip.w * FOG_DENSITY;
+    oColor = float4(aColor.rgb * COLOR_SCALE, 1.0 - exp(-d * d));
+}

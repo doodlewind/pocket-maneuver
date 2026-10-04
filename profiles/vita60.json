@@ -1,0 +1,9 @@
+{
+  "name": "vita60",
+  "target": "vita",
+  "presentation": { "render": [960, 544], "display": [960, 544], "targetFps": 60 },
+  "texture": { "format": "bc1", "maxMips": 8 },
+  "bake": { "sunRays": 4, "sunSpread": 0.02, "aoRays": 16, "aoReach": 14.0 },
+  "limits": { "maxMeshVertices": 65535, "maxPackBytes": 67108864 },
+  "font": { "sizes": [18, 26, 44], "atlas": [512, 512] }
+}

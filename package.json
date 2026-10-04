@@ -1,0 +1,19 @@
+{
+  "name": "pocket-maneuver",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "setup": "git submodule update --init && bun install && bun install --cwd web",
+    "maneuver": "bun tools/maneuver.ts",
+    "sim": "bun tools/maneuver.ts sim",
+    "dev": "bun tools/maneuver.ts sim && bun run --cwd web dev",
+    "typecheck": "bunx tsc --noEmit -p web",
+    "test": "cargo test --workspace"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "playwright-core": "^1.63.0",
+    "typescript": "^5.9.3"
+  }
+}

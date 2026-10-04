@@ -1,0 +1,14 @@
+// Interface quads in display pixels (960 × 544, origin top left).
+
+void main(
+    float2 aPosition,
+    float2 aUv,
+    float4 aColor,
+    out float4 oPosition : POSITION,
+    out float2 oUv : TEXCOORD0,
+    out float4 oColor : TEXCOORD1)
+{
+    oPosition = float4(aPosition.x / 480.0 - 1.0, 1.0 - aPosition.y / 272.0, 0.0, 1.0);
+    oUv = aUv;
+    oColor = aColor;
+}

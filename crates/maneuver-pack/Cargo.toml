@@ -1,0 +1,8 @@
+[package]
+name = "maneuver-pack"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The device pack of Pocket Maneuver: container, mesh table and vertex layouts shared by the compiler and the runtimes"
+
+[dependencies]

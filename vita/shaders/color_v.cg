@@ -1,0 +1,18 @@
+// Vertex-coloured geometry lit on the CPU: the character, targets, wires,
+// gas and the sky dome. uFog.x is the haze density (0 for the sky).
+
+void main(
+    float3 aPosition,
+    float4 aColor,
+    uniform float4x4 uMvp,
+    uniform float4 uFog,
+    out float4 oPosition : POSITION,
+    out float4 oColor : TEXCOORD0,
+    out float oFog : TEXCOORD1)
+{
+    float4 clip = mul(uMvp, float4(aPosition, 1.0));
+    oPosition = clip;
+    oColor = aColor;
+    float d = clip.w * uFog.x;
+    oFog = 1.0 - exp(-d * d);
+}

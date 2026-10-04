@@ -1,0 +1,9 @@
+// Atlas texel × baked light, then haze. One texture read, no dependent reads.
+
+uniform sampler2D uAtlas;
+
+half4 main(float2 vUv : TEXCOORD0, half4 vColor : TEXCOORD1) : COLOR
+{
+    half3 c = (half3)tex2D(uAtlas, vUv).rgb * vColor.rgb;
+    return half4(lerp(c, FOG_COLOR, vColor.a), 1.0);
+}

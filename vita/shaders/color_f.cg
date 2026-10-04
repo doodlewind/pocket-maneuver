@@ -1,0 +1,4 @@
+half4 main(half4 vColor : TEXCOORD0, half vFog : TEXCOORD1) : COLOR
+{
+    return half4(lerp(vColor.rgb, FOG_COLOR, vFog), vColor.a);
+}

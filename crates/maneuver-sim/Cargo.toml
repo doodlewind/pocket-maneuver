@@ -1,0 +1,12 @@
+[package]
+name = "maneuver-sim"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Deterministic simulation core of Pocket Maneuver: collision world, wire-gear physics, camera, pose and autopilot"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libm = "0.2"
