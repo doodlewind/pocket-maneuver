@@ -24,6 +24,9 @@ maneuver-pack = { path = "../../crates/maneuver-pack", default-features = false 
 maneuver-handheld = { path = "../../crates/maneuver-handheld", default-features = false }
 # The interface's channel as the C symbols PocketJS's guest driver calls (svcwire.h).
 maneuver-interface = { path = "../../crates/maneuver-interface", default-features = false, features = ["wire"] }
+# The Pocket3D title card's frames: this device has no frame buffer a CPU writes, so the shell shows
+# them through a texture (`mh_title`).
+pocket3d-title = { path = "../../vendor/pocketjs/engine/pocket3d/crates/pocket3d-title" }
 
 [profile.release]
 panic = "abort"

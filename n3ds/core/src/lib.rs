@@ -351,6 +351,28 @@ pub extern "C" fn mh_guest_due(buttons: u32, touching: u32) -> u32 {
     }
 }
 
+/// One tick of the Pocket3D title card (PocketJS's `pocket3d-title`) as RGBA rows from the top,
+/// `width` by `height`. The iPod touch has no frame buffer a CPU writes, so its shell shows each
+/// frame through a texture; the 3DS plays the card from PocketJS's C header. `shown` is the tick
+/// `pixels` already holds (any value past the card's length for none). Returns 0 once the card is
+/// over, 2 when the frame is the one `pixels` holds (nothing is written), 1 when it was drawn.
+///
+/// # Safety
+/// `pixels` has room for `width * height * 4` bytes.
+#[cfg(target_vendor = "apple")]
+#[no_mangle]
+pub unsafe extern "C" fn mh_title(pixels: *mut u8, width: u32, height: u32, tick: u32, shown: u32) -> u32 {
+    use pocket3d_title::{draw, level, Layout, Surface, TICKS};
+    if tick >= TICKS {
+        return 0;
+    }
+    if shown < TICKS && level(tick) == level(shown) {
+        return 2;
+    }
+    let mut surface = Surface { pixels: core::slice::from_raw_parts_mut(pixels, (width * height * 4) as usize), width, height, stride: width, layout: Layout::Rgba8 };
+    draw(&mut surface, tick) as u32
+}
+
 /// A guest holds the interface's channel.
 #[no_mangle]
 pub extern "C" fn mh_interface_open() -> u32 {

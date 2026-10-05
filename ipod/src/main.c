@@ -328,6 +328,75 @@ static void cover(void) {
   glLinkProgram(overlay);
 }
 
+// The Pocket3D title card, first at every launch and before anything of the
+// game's is read or shown. The frames are PocketJS's (the core draws each
+// tick's, `mh_title`); the pass that lays the interface over a frame shows
+// them. The card follows the clock, so a slow frame skips a tick and the card
+// still takes its 2.4 seconds. A development run that left `tmp/title.want`
+// gets the card's held frame in `tmp/title.rgba`, as presented.
+static void title(void) {
+  static uint8_t pixels[WIDTH * HEIGHT * 4], row[WIDTH * 4];
+  static const GLfloat corners[] = {-1, -1, 1, -1, -1, 1, 1, 1};
+  char want[1200];
+  snprintf(want, sizeof want, "%s/title.want", tmp);
+  bool wanted = !access(want, F_OK);
+  GLuint texture;
+  glGenTextures(1, &texture);
+  glBindTexture(GL_TEXTURE_2D, texture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, WIDTH, HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+  double start = now();
+  uint32_t shown = UINT32_MAX;
+  for (;;) {
+    pthread_mutex_lock(&lock);
+    bool visible = shared.active;
+    pthread_mutex_unlock(&lock);
+    uint32_t tick = (uint32_t)((now() - start) * 60.0);
+    if (!visible) {
+      // Background GL kills the process; the card waits where it was.
+      glFinish();
+      usleep(50000);
+      start = now() - tick / 60.0;
+      continue;
+    }
+    uint32_t drawn = mh_title(pixels, WIDTH, HEIGHT, tick, shown);
+    if (!drawn)
+      break;
+    if (drawn == 1) {
+      shown = tick;
+      // A texture's first row is its bottom one.
+      for (unsigned y = 0; y < HEIGHT / 2; y++) {
+        uint8_t *a = pixels + y * WIDTH * 4, *b = pixels + (HEIGHT - 1 - y) * WIDTH * 4;
+        memcpy(row, a, sizeof row);
+        memcpy(a, b, sizeof row);
+        memcpy(b, row, sizeof row);
+      }
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, WIDTH, HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glViewport(0, 0, HEIGHT, WIDTH);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glUseProgram(overlay);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, corners);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    if (wanted && tick >= 72) {
+      static uint8_t presented[WIDTH * HEIGHT * 4];
+      glReadPixels(0, 0, HEIGHT, WIDTH, GL_RGBA, GL_UNSIGNED_BYTE, presented);
+      write_file(tmp, "title.rgba", presented, sizeof presented);
+      unlink(want);
+      wanted = false;
+    }
+    glBindRenderbuffer(GL_RENDERBUFFER, colorbuffer);
+    ((BOOL(*)(id, SEL, unsigned))objc_msgSend)(context, sel("presentRenderbuffer:"), GL_RENDERBUFFER);
+  }
+  glDeleteTextures(1, &texture);
+}
+
 // A word of a control message that is this shell's:
 //   touch=X,Y[;X,Y…]  fingers held on the panel, in the interface's pixels; touch=off lifts them
 //   tap=X,Y           one finger down for a few turns
@@ -371,6 +440,7 @@ static void *render(void *unused) {
   pthread_t writer;
   pthread_create(&writer, NULL, reporter, NULL);
   cover();
+  title();
   // The interface is up before the pack is read, so the load shows through it.
   mh_stage(MH_STAGE_LOADING, "Reading the world", 17);
   size_t script_size, pak_size, prefs_size;

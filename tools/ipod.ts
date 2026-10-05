@@ -15,6 +15,7 @@
  *   bun tools/ipod.ts status
  *   bun tools/ipod.ts ctl "mode=play auto=1"  words for the shell and for Game::control (see ipod/src/main.c)
  *   bun tools/ipod.ts capture [--out PNG]     the frame as presented, interface and all
+ *   bun tools/ipod.ts title [--out PNG]       launches, and brings back the Pocket3D title card's held frame
  *   bun tools/ipod.ts bench [--seconds 60] [--ctl "lodMid=120"]   play flown by the autopilot: frame timings → .pocket-build/validation/ipod/
  *
  * The device is the one connected iPod4,1 (or POCKETJS_IPODTOUCH4_UDID), over
@@ -220,6 +221,16 @@ async function capture(d: Device, output: string) {
   run(["magick", "-size", "320x480", "-depth", "8", `rgba:${raw}`, "-alpha", "off", "-flip", "-rotate", "-90", output]);
   console.log(output);
 }
+/** The Pocket3D title card's held frame, as the device presented it at the next launch. */
+async function titleCard(d: Device, output: string) {
+  d.ssh(`touch ${shellQuote(d.tmp() + "/title.want")}; rm -f ${shellQuote(d.tmp() + "/title.rgba")}`);
+  await launch(d);
+  const raw = join(out, "title.rgba");
+  d.pull(`${d.tmp()}/title.rgba`, raw);
+  mkdirSync(resolve(output, ".."), { recursive: true });
+  run(["magick", "-size", "320x480", "-depth", "8", `rgba:${raw}`, "-alpha", "off", "-flip", "-rotate", "-90", output]);
+  console.log(output);
+}
 async function launch(d: Device) {
   await waitForScreen(d);
   d.ssh(`killall ${executableName} 2>/dev/null; rm -f ${shellQuote(d.tmp() + "/status.json")}; su mobile -c ${shellQuote(`uiopen ${bundleId}://launch`)}`);
@@ -263,6 +274,7 @@ else if (command === "deploy") {
 else if (command === "status") await device((d) => console.log(JSON.stringify(status(d))));
 else if (command === "ctl") await device(async (d) => console.log(JSON.stringify(await control(d, args[1] ?? ""))));
 else if (command === "capture") await device((d) => capture(d, resolve(option("--out", join(validation, "capture.png")))));
+else if (command === "title") await device((d) => titleCard(d, resolve(option("--out", join(validation, "title.png")))));
 else if (command === "bench") {
   // Play with the autopilot at the controls, so the frame carries what a
   // player's does: the marks on the world and the interface's play screen.
@@ -286,4 +298,4 @@ else if (command === "bench") {
     console.log(join(directory, "device.json"));
     console.log(JSON.stringify(summary, null, 1));
   });
-} else throw new Error("usage: cook | build | package | deploy | native [--pack] | launch | status | ctl WORDS | capture [--out PNG] | bench [--seconds N] [--ctl WORDS]");
+} else throw new Error("usage: cook | build | package | deploy | native [--pack] | launch | status | ctl WORDS | capture [--out PNG] | title [--out PNG] | bench [--seconds N] [--ctl WORDS]");

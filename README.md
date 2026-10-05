@@ -195,6 +195,7 @@ CPU time per frame: simulation, sound and mesh selection 2–4 ms, commands and 
 - **The scene** is the 3DS's passes with a leaner skin shader: the two bones' rows are blended before one transform, a giant beyond the near distance takes one bone, and the light is three precomputed terms. On the SGX535 a skinned vertex cost about four times a world vertex, and the frame follows the vertices submitted.
 - **The interface** is PocketJS's UI core with its OpenGL ES 2 backend and the portable QuickJS guest driver. The guest turns every frame (0.6 ms here); what it shows is drawn into a texture when it changed, on every other frame at most, and that texture is laid over the scene.
 - **Sound** leaves through an audio queue fed from the synthesizer at 22.05 kHz.
+- **The Pocket3D title card** plays first at launch: the core draws PocketJS's frames into memory and the shell shows each through a texture, since nothing here is a frame buffer a CPU writes.
 
 Measured on an iPod touch 4 (A4, iOS 6.1.6), play flown by the autopilot (`bun tools/ipod.ts bench --seconds 60`):
 

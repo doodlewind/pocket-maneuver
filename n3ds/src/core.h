@@ -138,6 +138,10 @@ void mh_prefs_stored(const char *text, uint32_t len);
 uint32_t mh_prefs_take(char *out, uint32_t cap);
 /* The sound setting is on and the game is not paused. */
 uint32_t mh_audible(void);
+/* iPod touch only: one tick of the Pocket3D title card as RGBA rows from the top. `shown` is the tick
+ * `pixels` already holds (UINT32_MAX for none). 0: the card is over; 2: the frame is the one held;
+ * 1: drawn. (The 3DS plays the card from PocketJS's pocket3d_title.h.) */
+uint32_t mh_title(uint8_t *pixels, uint32_t width, uint32_t height, uint32_t tick, uint32_t shown);
 /* Whether the guest's next turn is worth taking: it has something scheduled, the game has news for it,
  * or a button it listens to changed (`buttons` as held since the last offer; `touching`: a contact). */
 uint32_t mh_guest_due(uint32_t buttons, uint32_t touching);
