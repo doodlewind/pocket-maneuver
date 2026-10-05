@@ -9,6 +9,7 @@ ROOT := /maneuver
 BUILD := $(ROOT)/.pocket-build/3ds/build
 SOURCE := $(ROOT)/n3ds/src
 POCKET := $(ROOT)/vendor/pocketjs/hosts/3ds
+TITLE := $(ROOT)/vendor/pocketjs/engine/pocket3d/crates/pocket3d-title
 CORE := $(ROOT)/n3ds/core/target/armv6k-nintendo-3ds/release/libmaneuver_n3ds_core.a
 ICON := $(SOURCE)/../icon.png
 OUT := $(ROOT)/dist/3ds/pocket-maneuver.3dsx
@@ -16,7 +17,7 @@ ROMFS := $(ROOT)/.pocket-build/3ds/romfs
 ARCH := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 CFLAGS := -O3 -g -Wall -Wextra -std=gnu11 -ffunction-sections -fdata-sections -mword-relocations $(ARCH) \
   -D__3DS__ -DPOCKETJS_RUNTIME_SLOT='"pocket-maneuver"' \
-  -include $(BUILD)/config.h -I$(SOURCE) -I$(BUILD) -I$(POCKET)/src -I$(POCKET)/include -I$(DEVKITPRO)/libctru/include -I$(DEVKITPRO)/portlibs/3ds/include
+  -include $(BUILD)/config.h -I$(SOURCE) -I$(BUILD) -I$(POCKET)/src -I$(POCKET)/include -I$(TITLE)/include -I$(DEVKITPRO)/libctru/include -I$(DEVKITPRO)/portlibs/3ds/include
 LDFLAGS := -specs=3dsx.specs $(ARCH) -Wl,--gc-sections -Wl,-Map,$(BUILD)/maneuver.map
 SHADERS := world color skin hud
 OWN := main.o render.o

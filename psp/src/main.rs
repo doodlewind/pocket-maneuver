@@ -97,8 +97,27 @@ fn read_pad(data: &SceCtrlData) -> Pad {
     Pad { buttons, lx: axis(data.lx), ly: -axis(data.ly), rx: dir(CtrlButtons::LEFT, CtrlButtons::RIGHT), ry: dir(CtrlButtons::DOWN, CtrlButtons::UP) }
 }
 
+/// The Pocket3D title card, drawn into video memory before the GE is set up.
+unsafe fn title() {
+    // the uncached mirror of video memory: what is written is what the display reads
+    let vram = (sceGeEdramGetAddr() as usize | 0x4000_0000) as *mut u8;
+    sceDisplaySetMode(DisplayMode::Lcd, 480, 272);
+    let mut surface = pocket3d_title::Surface {
+        pixels: core::slice::from_raw_parts_mut(vram, 512 * 272 * 4),
+        width: 480,
+        height: 272,
+        stride: 512,
+        layout: pocket3d_title::Layout::Rgba8,
+    };
+    pocket3d_title::play(&mut surface, |_| {
+        sceDisplaySetFrameBuf(vram, 512, DisplayPixelFormat::Psm8888, DisplaySetBufSync::NextFrame);
+        sceDisplayWaitVblankStart();
+    });
+}
+
 unsafe fn run() -> Result<(), &'static str> {
     scePowerSetClockFrequency(333, 333, 166);
+    title();
     psp::dprintln!("Pocket Maneuver\n");
     let t_load = sceKernelGetSystemTimeLow();
     let free_at_start = sceKernelTotalFreeMemSize();
