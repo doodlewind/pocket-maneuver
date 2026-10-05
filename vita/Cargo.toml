@@ -16,6 +16,8 @@ pocket-vita-gxm = { path = "../vendor/pocketjs/devices/vita/pocket-vita-gxm", fe
 pocket3d-title = { path = "../vendor/pocketjs/engine/pocket3d/crates/pocket3d-title" }
 maneuver-sim = { path = "../crates/maneuver-sim" }
 maneuver-pack = { path = "../crates/maneuver-pack" }
+# The interface (ui/): its protocol, the game's flow, and the channel the PocketJS guest opens in the process.
+maneuver-interface = { path = "../crates/maneuver-interface", features = ["guest"] }
 serde_json = "1"
 libm = "0.2"
 sha2 = "0.10"

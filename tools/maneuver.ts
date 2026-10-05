@@ -61,14 +61,14 @@ switch (cmd) {
   case "bench": {
     const vita = await import("./vita.ts");
     if (cmd === "build") await vita.build(rest);
-    else if (cmd === "sync") vita.sync(rest);
+    else if (cmd === "sync") await vita.sync(rest);
     else if (cmd === "native") {
-      vita.sync(rest);
+      await vita.sync(rest);
       await vita.build(rest);
       await vita.dev(rest, "native");
     } else if (cmd === "push") {
       // The build already in dist/, without rebuilding it.
-      vita.sync(rest);
+      await vita.sync(rest);
       await vita.dev(rest, "native");
     } else if (cmd === "serve") await vita.dev(rest, "serve");
     else if (cmd === "status") console.log(JSON.stringify(vita.status(rest), null, 1));

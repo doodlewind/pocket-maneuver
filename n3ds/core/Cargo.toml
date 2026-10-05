@@ -22,6 +22,8 @@ crate-type = ["staticlib"]
 maneuver-sim = { path = "../../crates/maneuver-sim", default-features = false, features = ["hw-sqrt"] }
 maneuver-pack = { path = "../../crates/maneuver-pack", default-features = false }
 maneuver-handheld = { path = "../../crates/maneuver-handheld", default-features = false }
+# The interface's channel as the C symbols PocketJS's guest driver calls (svcwire.h).
+maneuver-interface = { path = "../../crates/maneuver-interface", default-features = false, features = ["wire"] }
 
 [profile.release]
 # The target defaults to unwinding; a static library in a libctru program has no unwinder.

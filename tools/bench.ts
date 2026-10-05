@@ -2,7 +2,9 @@
 //
 //   bun tools/maneuver.ts bench [--seconds 60] [--ctl '{"lodMid":300}'] [--share DIR]
 //
-// Samples the running process's status receipt once a second and writes the
+// The run is in play mode with the autopilot at the controls, so the frame
+// carries what a player's does: the marks on the world and the interface's
+// play screen. Samples the running process's status receipt once a second and writes the
 // evidence to `.pocket-build/validation/vita/bench-<time>/device.json`. The
 // identity (native build, pack hash) comes from what the device reports and
 // must not change during the window.
@@ -39,7 +41,7 @@ export async function bench(argv: string[]) {
   };
   const seconds = Number(arg("--seconds", "60"));
   const extra = JSON.parse(arg("--ctl", "{}"));
-  ctl(argv, JSON.stringify({ auto: true, reset: true, nonce: Date.now(), ...extra }));
+  ctl(argv, JSON.stringify({ mode: "play", auto: true, reset: true, nonce: Date.now(), ...extra }));
   await Bun.sleep(2500);
   const first = status(argv);
   const evidence = new DeviceEvidence<Sample>(identity(first));

@@ -1,7 +1,8 @@
 /* The PICA200 renderer.
  *
  * One pass with a 24-bit depth buffer: the sky, the picked meshes page by
- * page, the skinned models, the cloak, wires and discs, then the interface.
+ * page, the skinned models, the cloak, wires and discs, then the marks on the
+ * world. The interface is drawn over it afterwards (guest.c).
  * The fragment stage is fixed-function: atlas texel x vertex colour x 2, then
  * the haze from a fog table. Vertex shaders are in the .v.pica files.
  *
@@ -20,7 +21,8 @@
 #include "skin_shbin.h"
 #include "world_shbin.h"
 
-#define HUD_QUADS 320
+/* Quads of marks a frame (three reticles, fourteen streaks, the target and its distance), and of wire. */
+#define HUD_QUADS 224
 #define SKY_RADIUS 1000.0f
 /* maneuver_pack: metres per position unit of a static vertex. */
 #define PICA_STEP (1.0f / 24.0f)
@@ -146,7 +148,7 @@ bool render_init(const RenderData *d, char *error, size_t n) {
   AttrInfo_AddLoader(&skin_prog.attr, 1, GPU_BYTE, 4);
   AttrInfo_AddLoader(&skin_prog.attr, 2, GPU_UNSIGNED_BYTE, 4);
   AttrInfo_AddLoader(&skin_prog.attr, 3, GPU_UNSIGNED_BYTE, 4);
-  /* Interface: position float x 3, texture coordinates float x 2, colour. In the buffer: uv, colour, position. */
+  /* Marks: position float x 3, texture coordinates float x 2, colour. In the buffer: uv, colour, position. */
   AttrInfo_AddLoader(&hud_prog.attr, 0, GPU_FLOAT, 3);
   AttrInfo_AddLoader(&hud_prog.attr, 1, GPU_FLOAT, 2);
   AttrInfo_AddLoader(&hud_prog.attr, 2, GPU_UNSIGNED_BYTE, 4);
@@ -378,7 +380,7 @@ void render_frame(C3D_RenderTarget *target, const MhView *view, uint32_t ticks, 
     }
   }
 
-  /* ---------------------------------------------------------------- interface */
+  /* ---------------------------------------------------------------- marks */
   C3D_Mtx ortho;
   Mtx_OrthoTilt(&ortho, 0.0f, 400.0f, 240.0f, 0.0f, -1.0f, 1.0f, true);
   MhHudVertex *hv = hud_vb[flip];
@@ -387,7 +389,7 @@ void render_frame(C3D_RenderTarget *target, const MhView *view, uint32_t ticks, 
   MhPerf p = *perf;
   p.draws = render_stats.draws;
   p.tris = render_stats.tris;
-  unsigned quads = mh_hud(hv, HUD_QUADS * 4, uv_scale, uv_offset, &p);
+  unsigned quads = mh_marks(hv, HUD_QUADS * 4, uv_scale, uv_offset, &p);
   if (quads) {
     GSPGPU_FlushDataCache(hv, quads * 4 * sizeof *hv);
     use(&hud_prog, &ortho);

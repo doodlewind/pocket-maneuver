@@ -3,16 +3,17 @@ name = "maneuver-handheld"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Device-independent half of the PSP and 3DS runtimes of Pocket Maneuver: what to draw, the moving geometry, the interface and the game loop"
+description = "Device-independent half of the PSP and 3DS runtimes of Pocket Maneuver: what to draw, the moving geometry, the marks on the world and the game loop"
 
 [features]
 default = ["std"]
 # Without `std` the crate needs only `core` and `alloc` (the device builds).
-std = ["maneuver-sim/std", "maneuver-pack/std"]
+std = ["maneuver-sim/std", "maneuver-pack/std", "maneuver-interface/std"]
 hw-sqrt = ["maneuver-sim/hw-sqrt"]
 single-float = ["maneuver-sim/single-float"]
 
 [dependencies]
 maneuver-sim = { path = "../maneuver-sim", default-features = false }
 maneuver-pack = { path = "../maneuver-pack", default-features = false }
+maneuver-interface = { path = "../maneuver-interface", default-features = false }
 libm = "0.2"

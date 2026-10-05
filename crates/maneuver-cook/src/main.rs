@@ -9,6 +9,7 @@
 //! `3ds` (`handheld`).
 //!
 //! `maneuver-cook --in <WorldIR dir> --out <pack> --profile <json> --font <ttf>`
+//! `maneuver-cook --in <WorldIR dir> --map <file> [--map-size <pixels>]` writes the town from above alone.
 
 mod bake;
 mod font;
@@ -181,6 +182,13 @@ fn arg(args: &[String], name: &str) -> Option<String> {
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let input = PathBuf::from(arg(&args, "--in").ok_or("--in <WorldIR directory> is required")?);
+    // The town from above on its own, for the interface (tools/ui.ts): `--in <WorldIR> --map <file> [--map-size <pixels>]`.
+    if let Some(path) = arg(&args, "--map") {
+        let ir = ir::load(&input)?;
+        let sim = maneuver_sim::worldfile::load(&ir.world).map_err(|e| format!("world.mvsw: {e}"))?;
+        let size = arg(&args, "--map-size").and_then(|s| s.parse().ok()).unwrap_or(256);
+        return std::fs::write(&path, handheld::map(&sim.world, ir.scene.sun_dir, size, handheld::MAP_EXTENT)).map_err(|e| format!("{path}: {e}"));
+    }
     let output = PathBuf::from(arg(&args, "--out").ok_or("--out <pack> is required")?);
     let profile_path = PathBuf::from(arg(&args, "--profile").ok_or("--profile <json> is required")?);
     let font_path = PathBuf::from(arg(&args, "--font").ok_or("--font <ttf> is required")?);
@@ -421,7 +429,7 @@ fn cook_handheld(c: Cooked, target: handheld::Target, h: &handheld::Handheld) ->
         (if psp { pack::SIMG } else { pack::SIMW }, &simg),
     ];
     // The 3DS shows the town from above on its lower screen.
-    let map = if psp { Vec::new() } else { handheld::map(&c.sim.world, ir.scene.sun_dir, 240, 620.0) };
+    let map = if psp { Vec::new() } else { handheld::map(&c.sim.world, ir.scene.sun_dir, 240, handheld::MAP_EXTENT) };
     if !psp {
         sections.push((pack::MAPT, &map));
     }

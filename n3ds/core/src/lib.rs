@@ -1,7 +1,11 @@
 //! C interface of the 3DS host (`../src/core.h` declares the same functions).
 //!
 //! The host owns the GPU, the pad, sound and storage; it hands the pack's
-//! tables in once and then asks, each frame, what to draw.
+//! tables in once and then asks, each frame, what to draw. The interface is a
+//! PocketJS guest the host runs beside this library: its service channel is
+//! answered here (`maneuver_interface::wire` exports the `svcwire_*` functions
+//! PocketJS's guest driver calls), so the state and the commands never leave
+//! the process.
 
 #![no_std]
 
@@ -20,10 +24,9 @@ use maneuver_handheld::hud::{Font, Hud, HudVertex};
 use maneuver_handheld::mat::{self, Mat4};
 use maneuver_handheld::scene::Scene;
 use maneuver_handheld::world::{Pick, World};
+use maneuver_interface::{channel, Mode, Pace};
 use maneuver_pack::{HandMesh, HandScene, PicaVertex};
 use maneuver_sim::pose::{BONES, CLOAK_N};
-
-const HELP: &str = "L / R wires   B gas   Y cut   X aimed wires   A let go";
 
 struct App {
     game: Game,
@@ -41,6 +44,11 @@ static mut APP: Option<App> = None;
 fn app() -> &'static mut App {
     // The host calls from one thread, after `mh_init` succeeded.
     unsafe { (*core::ptr::addr_of_mut!(APP)).as_mut().unwrap_unchecked() }
+}
+
+/// The game, once `mh_init` has built it.
+fn game() -> Option<&'static mut Game> {
+    unsafe { (*core::ptr::addr_of_mut!(APP)).as_mut().map(|a| &mut a.game) }
 }
 
 /// Sizes the host's buffers must have; `mh_sizes` returns them so a mismatch with `core.h` fails at start.
@@ -105,7 +113,9 @@ pub unsafe extern "C" fn mh_init(scene: *const HandScene, meshes: *const HandMes
         Ok((f, _)) => f,
         Err(_) => return fail("the pack's font does not load\0"),
     };
-    let game = Game::new(sim, scene, HELP);
+    let mut game = Game::new(sim, scene);
+    // The numbers in flight 15 times a second: each refresh is a turn of the guest.
+    game.session.numbers_every = 4;
     APP = Some(App { game, world, font, far: Vec::with_capacity(1024), near: Vec::with_capacity(256), giants: Vec::with_capacity(32), vp: mat::IDENTITY, text: String::with_capacity(4096) });
     core::ptr::null()
 }
@@ -245,22 +255,25 @@ pub unsafe extern "C" fn mh_scout_pose(rows: *mut f32, light: *mut f32) {
     *(light as *mut [f32; 16]) = a.game.scene.light(a.game.actors.vis);
 }
 
-/// Writes the cloak, the wires and the soft discs for this frame.
+/// Writes the cloak, the wires and the soft discs for this frame. While the game is paused no time passes for them.
 #[no_mangle]
 pub unsafe extern "C" fn mh_actors(ticks: u32, cloak: *mut ColorVertex, rope: *mut ColorVertex, disc: *mut ColorVertex, out: *mut Frame) {
     let a = app();
     let eye = a.game.camera().eye;
     let g = &mut a.game;
+    let ticks = if g.session.paused() { 0 } else { ticks };
     *out = g.actors.update(&g.sim, &g.scene, eye, ticks, core::slice::from_raw_parts_mut(cloak, CLOAK_N), core::slice::from_raw_parts_mut(rope, actors::ROPE_VERTS), core::slice::from_raw_parts_mut(disc, actors::DISC_VERTS));
 }
 
-/// Batches the interface into `verts` (four per quad). Texture coordinates leave as `texel × scale + offset`.
+/// Batches the marks on the world into `verts` (four per quad): where each wire would bite, the
+/// streaks of speed, the nearest target. Texture coordinates leave as `texel × scale + offset`.
+/// `perf` goes into the statistics line the interface shows.
 #[no_mangle]
-pub unsafe extern "C" fn mh_hud(verts: *mut HudVertex, cap: u32, uv_scale: *const f32, uv_offset: *const f32, perf: *const Perf) -> u32 {
+pub unsafe extern "C" fn mh_marks(verts: *mut HudVertex, cap: u32, uv_scale: *const f32, uv_offset: *const f32, perf: *const Perf) -> u32 {
     let a = app();
     a.game.measure(&*perf);
     let mut hud = Hud::new(&a.font, core::slice::from_raw_parts_mut(verts, cap as usize), [*uv_scale, *uv_scale.add(1)], [*uv_offset, *uv_offset.add(1)]);
-    a.game.draw_hud(&mut hud, &a.vp);
+    a.game.draw_marks(&mut hud, &a.vp);
     hud.quads as u32
 }
 
@@ -284,42 +297,61 @@ pub unsafe extern "C" fn mh_status(out: *mut u8, cap: u32, perf: *const Perf, ex
     n as u32
 }
 
-/// For the lower screen: the player's position and heading, and each giant's position and state.
-#[repr(C)]
-pub struct MhMap {
-    pub player: [f32; 3],
-    pub yaw: f32,
-    pub speed: f32,
-    pub gas: f32,
-    pub kills: u32,
-    pub giants: u32,
-    pub ticks: u32,
-    pub auto_on: u32,
-    pub bounds: f32,
-    pub done: u32,
+/// What the interface shows while there is no game: 0 reading the pack (`message` names the step),
+/// 1 the start failed (`message` says why). The first `mh_step` puts the game's own flow in its place.
+#[no_mangle]
+pub unsafe extern "C" fn mh_stage(stage: u32, message: *const u8, len: u32) {
+    let state = &mut channel().state;
+    state.mode = if stage == 0 { Mode::Loading } else { Mode::Error };
+    state.message.clear();
+    if let Ok(text) = core::str::from_utf8(core::slice::from_raw_parts(message, len as usize)) {
+        state.message.push_str(text);
+    }
 }
 
+/// The preferences the host read from its storage at the start, for the interface.
 #[no_mangle]
-pub unsafe extern "C" fn mh_map(out: *mut MhMap, giant_xz_alive: *mut f32, cap: u32) -> u32 {
-    let g = &app().game;
-    let s = &g.sim;
-    *out = MhMap {
-        player: [s.p.pos.x, s.p.pos.y, s.p.pos.z],
-        yaw: s.cam.yaw,
-        speed: s.speed(),
-        gas: s.p.gas / maneuver_sim::sim::tune::GAS_MAX,
-        kills: s.run.kills,
-        giants: s.dummies.len() as u32,
-        ticks: s.run.ticks,
-        auto_on: g.set.auto as u32,
-        bounds: s.bounds,
-        done: s.run.done as u32,
-    };
-    let n = s.dummies.len().min(cap as usize);
-    for (i, d) in s.dummies.iter().take(n).enumerate() {
-        *giant_xz_alive.add(i * 3) = d.pos.x;
-        *giant_xz_alive.add(i * 3 + 1) = d.pos.z;
-        *giant_xz_alive.add(i * 3 + 2) = d.alive as u32 as f32;
+pub unsafe extern "C" fn mh_prefs_stored(text: *const u8, len: u32) {
+    let state = &mut channel().state;
+    state.prefs.clear();
+    if let Ok(text) = core::str::from_utf8(core::slice::from_raw_parts(text, len as usize)) {
+        state.prefs.push_str(text);
     }
-    n as u32
+}
+
+/// What the interface asked to have stored since the last call, NUL-terminated: its length, or 0
+/// when there is nothing (or it does not fit `cap`, in which case it is dropped).
+#[no_mangle]
+pub unsafe extern "C" fn mh_prefs_take(out: *mut u8, cap: u32) -> u32 {
+    let Some(text) = game().and_then(|g| g.prefs.take()) else { return 0 };
+    if text.len() >= cap as usize {
+        return 0;
+    }
+    core::ptr::copy_nonoverlapping(text.as_ptr(), out, text.len());
+    *out.add(text.len()) = 0;
+    text.len() as u32
+}
+
+/// Whether the host plays the synthesizer just now: the sound setting is on and the game is not paused.
+#[no_mangle]
+pub extern "C" fn mh_audible() -> u32 {
+    game().is_some_and(|g| g.audible()) as u32
+}
+
+/// Whether the guest's next turn is worth taking (`maneuver_interface::Pace`): a turn runs the whole
+/// framework's frame however little changed. `buttons` are the guest's as held since the last offer,
+/// `touching` a contact on a surface it reads. Before the game exists every turn is taken.
+#[no_mangle]
+pub extern "C" fn mh_guest_due(buttons: u32, touching: u32) -> u32 {
+    static mut PACE: Pace = Pace::new();
+    match game() {
+        Some(g) => unsafe { (*core::ptr::addr_of_mut!(PACE)).due(&g.session, buttons, touching != 0) as u32 },
+        None => 1,
+    }
+}
+
+/// A guest holds the interface's channel.
+#[no_mangle]
+pub extern "C" fn mh_interface_open() -> u32 {
+    unsafe { channel() }.is_open() as u32
 }

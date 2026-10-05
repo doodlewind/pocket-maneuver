@@ -9,7 +9,9 @@
 //! 3. the near pass: the cells around the eye, the character and what moves,
 //!    with a short frustum and the other three quarters. The GE's depth buffer
 //!    cannot resolve 0.4 m to 2.6 km in one range;
-//! 4. the interface.
+//! 4. the marks on the world (where a wire would bite, the nearest target),
+//!    then the interface, which PocketJS's GE backend draws from the guest's
+//!    list (`interface`).
 //!
 //! The GE has fixed-function texturing: atlas texel × vertex colour × 2, then
 //! linear haze. Skinned models blend up to four bones per draw and take the
@@ -31,7 +33,8 @@ use maneuver_sim::pose::{BONES, CLOAK_N};
 use psp::sys::*;
 use psp::Align16;
 
-use crate::store;
+use crate::interface::Ui;
+use crate::{mem, store};
 
 const LIST_WORDS: usize = 196_608;
 static mut LIST: Align16<[u32; LIST_WORDS]> = Align16([0; LIST_WORDS]);
@@ -43,7 +46,10 @@ const VRAM_TEXTURES: usize = FB_BYTES * 3;
 static mut CLUT: Align16<[[u32; 256]; 4]> = Align16([[0; 256]; 4]);
 const VRAM_BYTES: usize = 2 * 1024 * 1024;
 
-pub const MAX_QUADS: usize = 320;
+/// Quads of one batch: the marks on the world, or the wires.
+pub const MAX_QUADS: usize = 224;
+/// Which of the two frame buffers the list being built draws into.
+pub static mut DRAW_BUFFER: usize = 0;
 /// Vertices of CPU-clipped triangles per atlas page and pass.
 const CLIP_CAP: usize = 1536;
 /// The far pass's share of the depth buffer.
@@ -97,21 +103,19 @@ pub struct Stats {
     /// Large triangles tested and cut on the CPU.
     pub tested: u32,
     pub clipped: u32,
-    /// Microseconds of the frame's phases: choosing meshes, far meshes, far giants, near models, near meshes, sky and moving geometry, interface.
-    pub phase: [u32; 7],
+    /// Microseconds of the frame's phases: choosing meshes, far meshes, far giants, near models, near meshes, sky and moving geometry, marks, interface.
+    pub phase: [u32; 8],
 }
 
 pub struct Gfx {
     tex: TexHeader,
     /// VRAM address of each page's levels.
     pages: Vec<Vec<*const u8>>,
-    vtx: Vec<u8>,
-    idx: Vec<u16>,
-    clip: Vec<u8>,
-    _models: Vec<u8>,
+    vtx: &'static [u8],
+    idx: &'static [u16],
+    clip: &'static [u8],
     scout: Model,
     titans: [[Model; 2]; 3],
-    _font_bytes: Vec<u8>,
     font_tex: *const u8,
     pub font: Font,
     sky_vb: Vec<ColorVertex>,
@@ -135,62 +139,133 @@ unsafe fn flush<T>(p: *const T, bytes: usize) {
     sceKernelDcacheWritebackRange(p as *const c_void, bytes as u32);
 }
 
+/// Starts the GE: two 16-bit frame buffers, the depth buffer, and the state every frame assumes.
+pub unsafe fn init() {
+    sceGuInit();
+    sceGuStart(GuContextType::Direct, ptr::addr_of_mut!(LIST.0) as *mut c_void);
+    // 16-bit colour with ordered dither: half the memory traffic of 32-bit per pixel written.
+    sceGuDrawBuffer(DisplayPixelFormat::Psm5650, ptr::null_mut(), 512);
+    sceGuDispBuffer(480, 272, FB_BYTES as *mut c_void, 512);
+    sceGuDepthBuffer((FB_BYTES * 2) as *mut c_void, 512);
+    sceGuOffset(2048 - 240, 2048 - 136);
+    sceGuViewport(2048, 2048, 480, 272);
+    sceGuDepthRange(65535, 0);
+    sceGuDepthFunc(DepthFunc::GreaterOrEqual);
+    sceGuScissor(0, 0, 480, 272);
+    sceGuEnable(GuState::ScissorTest);
+    sceGuEnable(GuState::ClipPlanes);
+    sceGuFrontFace(FrontFaceDirection::CounterClockwise);
+    sceGuShadeModel(ShadingModel::Smooth);
+    let row = |x, y, z, w| ScePspIVector4 { x, y, z, w };
+    sceGuSetDither(&ScePspIMatrix4 { x: row(-4, 0, -3, 1), y: row(2, -2, 3, -1), z: row(-3, 1, -4, 0), w: row(3, -1, 2, -2) });
+    sceGuEnable(GuState::Dither);
+    sceGuTexWrap(GuTexWrapMode::Repeat, GuTexWrapMode::Clamp);
+    sceGuBlendFunc(BlendOp::Add, BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, 0, 0);
+    sceGuLightMode(LightMode::SingleColor);
+    sceGuColorMaterial(LightComponent::AMBIENT | LightComponent::DIFFUSE);
+    sceGuClearColor(BACKDROP);
+    sceGuClear(ClearBuffer::COLOR_BUFFER_BIT);
+    sceGuFinish();
+    sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
+    sceDisplayWaitVblankStart();
+    sceGuDisplay(true);
+}
+
+/// Presents the frame just drawn; the next list draws into the other buffer.
+pub unsafe fn swap() {
+    sceGuSwapBuffers();
+    DRAW_BUFFER ^= 1;
+}
+
+/// A frame out of video memory, 480 × 272 texels of 16 bits: host I/O cannot take a video memory
+/// address. `buffer` is `DRAW_BUFFER` for the list just drawn and not yet presented.
+pub unsafe fn pixels(buffer: usize) -> Vec<u8> {
+    let vram = sceGeEdramGetAddr().add(buffer * FB_BYTES);
+    let mut out = alloc::vec![0u8; 480 * 272 * 2];
+    for y in 0..272 {
+        ptr::copy_nonoverlapping(vram.add(y * 512 * 2), out.as_mut_ptr().add(y * 480 * 2), 480 * 2);
+    }
+    out
+}
+
+/// Behind the interface while there is no scene.
+const BACKDROP: u32 = 0xff14_100c;
+
+/// A frame of the interface alone, shown at once: the pack is loading, or it could not be.
+pub unsafe fn interlude(ui: &Ui) {
+    sceGuStart(GuContextType::Direct, ptr::addr_of_mut!(LIST.0) as *mut c_void);
+    sceGuClearColor(BACKDROP);
+    sceGuClear(ClearBuffer::COLOR_BUFFER_BIT);
+    ui.draw();
+    sceGuFinish();
+    sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
+    pocketjs_psp::ge::reset_pool();
+    sceDisplayWaitVblankStart();
+    swap();
+}
+
 impl Gfx {
-    /// Reads the pack's drawing data and sets the GE up.
+    /// Reads the pack's drawing data. The atlas goes to video memory; `init` may run before or after.
     pub unsafe fn load(file: &store::PackFile, scene: &maneuver_handheld::scene::Scene, progress: &mut dyn FnMut(&str)) -> Result<Gfx, &'static str> {
-        // The atlas goes to VRAM after the two frame buffers and the depth buffer.
-        progress("atlas");
-        let tex_bytes: Vec<u8> = file.records(pack::TEX0)?;
-        let tex: TexHeader = pack::read(&tex_bytes, 0).ok_or("atlas header")?;
-        if !matches!(tex.format, tex_format::PSP_DXT1 | tex_format::PSP_5650 | tex_format::PSP_T8) || scene.h.pages > 4 {
-            return Err("the atlas is not a PSP texture");
-        }
-        let vram = sceGeEdramGetAddr();
-        let mut at = (VRAM_TEXTURES + 15) & !15;
-        let mut src = core::mem::size_of::<TexHeader>();
-        let mut pages = Vec::new();
-        for page in 0..scene.h.pages as usize {
-            let mut levels = Vec::new();
-            if tex.format == tex_format::PSP_T8 {
-                src = (src + 15) & !15;
-                if src + tex_format::PALETTE_BYTES > tex_bytes.len() {
-                    return Err("the atlas is truncated");
-                }
-                ptr::copy_nonoverlapping(tex_bytes.as_ptr().add(src), ptr::addr_of_mut!(CLUT.0[page]) as *mut u8, tex_format::PALETTE_BYTES);
-                src += tex_format::PALETTE_BYTES;
+        // The atlas goes to VRAM after the two frame buffers and the depth buffer. It passes through
+        // main memory once, in a buffer that is given back.
+        progress("Uploading the atlas");
+        let tex_size = file.section(pack::TEX0)?.size as usize;
+        let pages_wanted = scene.h.pages as usize;
+        let (tex, pages) = mem::scratch(tex_size, |tex_bytes| -> Result<(TexHeader, Vec<Vec<*const u8>>), &'static str> {
+            file.read_into(pack::TEX0, 0, tex_bytes.as_mut_ptr(), tex_size)?;
+            let tex: TexHeader = pack::read(tex_bytes, 0).ok_or("atlas header")?;
+            if !matches!(tex.format, tex_format::PSP_DXT1 | tex_format::PSP_5650 | tex_format::PSP_T8) || pages_wanted > 4 {
+                return Err("the atlas is not a PSP texture");
             }
-            for l in 0..tex.mips {
-                src = (src + 15) & !15;
-                let n = tex_format::level_bytes(tex.format, tex.width >> l, tex.height >> l);
-                if at + n > VRAM_BYTES || src + n > tex_bytes.len() {
-                    return Err("the atlas does not fit in video memory");
+            let vram = sceGeEdramGetAddr();
+            let mut at = (VRAM_TEXTURES + 15) & !15;
+            let mut src = core::mem::size_of::<TexHeader>();
+            let mut pages = Vec::new();
+            for page in 0..pages_wanted {
+                let mut levels = Vec::new();
+                if tex.format == tex_format::PSP_T8 {
+                    src = (src + 15) & !15;
+                    if src + tex_format::PALETTE_BYTES > tex_bytes.len() {
+                        return Err("the atlas is truncated");
+                    }
+                    ptr::copy_nonoverlapping(tex_bytes.as_ptr().add(src), ptr::addr_of_mut!(CLUT.0[page]) as *mut u8, tex_format::PALETTE_BYTES);
+                    src += tex_format::PALETTE_BYTES;
                 }
-                ptr::copy_nonoverlapping(tex_bytes.as_ptr().add(src), vram.add(at), n);
-                levels.push(vram.add(at) as *const u8);
-                at = (at + n + 15) & !15;
-                src += n;
+                for l in 0..tex.mips {
+                    src = (src + 15) & !15;
+                    let n = tex_format::level_bytes(tex.format, tex.width >> l, tex.height >> l);
+                    if at + n > VRAM_BYTES || src + n > tex_bytes.len() {
+                        return Err("the atlas does not fit in video memory");
+                    }
+                    ptr::copy_nonoverlapping(tex_bytes.as_ptr().add(src), vram.add(at), n);
+                    levels.push(vram.add(at) as *const u8);
+                    at = (at + n + 15) & !15;
+                    src += n;
+                }
+                pages.push(levels);
             }
-            pages.push(levels);
-        }
-        drop(tex_bytes);
+            Ok((tex, pages))
+        })
+        .ok_or("no memory to read the atlas")??;
 
-        progress("geometry");
-        let vtx: Vec<u8> = file.records(pack::VTX0)?;
-        let idx: Vec<u16> = file.records(pack::IDX0)?;
-        let clip: Vec<u8> = file.records(pack::CLIP)?;
+        progress("Reading the town");
+        let vtx: &'static [u8] = file.resident(pack::VTX0)?;
+        let idx: &'static [u16] = file.resident(pack::IDX0)?;
+        let clip: &'static [u8] = file.resident(pack::CLIP)?;
 
-        progress("models");
-        let models: Vec<u8> = file.records(pack::MODL)?;
-        let count: u32 = pack::read(&models, 0).ok_or("model count")?;
+        progress("Reading the models");
+        let models: &'static [u8] = file.resident(pack::MODL)?;
+        let count: u32 = pack::read(models, 0).ok_or("model count")?;
         let mut scout = Model::default();
         let mut titans: [[Model; 2]; 3] = Default::default();
         let mut o = 4;
         for _ in 0..count {
-            let h: ModelHeader = pack::read(&models, o).ok_or("model header")?;
+            let h: ModelHeader = pack::read(models, o).ok_or("model header")?;
             o += core::mem::size_of::<ModelHeader>();
             let mut model = Model::default();
             for _ in 0..h.pad {
-                let b: PspBatch = pack::read(&models, o).ok_or("model batch")?;
+                let b: PspBatch = pack::read(models, o).ok_or("model batch")?;
                 o += core::mem::size_of::<PspBatch>();
                 let vb = b.vtx_count as usize * core::mem::size_of::<PspSkinVertex>();
                 let ib = b.idx_count as usize * 2;
@@ -211,9 +286,8 @@ impl Gfx {
             return Err("the pack lacks a skinned model");
         }
 
-        progress("interface");
-        let font_bytes: Vec<u8> = file.records(pack::FONT)?;
-        let (font, tex_at) = Font::parse(&font_bytes)?;
+        let font_bytes: &'static [u8] = file.resident(pack::FONT)?;
+        let (font, tex_at) = Font::parse(font_bytes)?;
         if font.format != tex_format::PSP_4444 {
             return Err("the font atlas is not a PSP texture");
         }
@@ -234,43 +308,14 @@ impl Gfx {
         let resident_bytes = vtx.len() + idx.len() * 2 + clip.len() + models.len() + font_bytes.len();
         sceKernelDcacheWritebackAll();
 
-        sceGuInit();
-        sceGuStart(GuContextType::Direct, ptr::addr_of_mut!(LIST.0) as *mut c_void);
-        // 16-bit colour with ordered dither: half the memory traffic of 32-bit per pixel written.
-        sceGuDrawBuffer(DisplayPixelFormat::Psm5650, ptr::null_mut(), 512);
-        sceGuDispBuffer(480, 272, FB_BYTES as *mut c_void, 512);
-        sceGuDepthBuffer((FB_BYTES * 2) as *mut c_void, 512);
-        sceGuOffset(2048 - 240, 2048 - 136);
-        sceGuViewport(2048, 2048, 480, 272);
-        sceGuDepthRange(65535, 0);
-        sceGuDepthFunc(DepthFunc::GreaterOrEqual);
-        sceGuScissor(0, 0, 480, 272);
-        sceGuEnable(GuState::ScissorTest);
-        sceGuEnable(GuState::ClipPlanes);
-        sceGuFrontFace(FrontFaceDirection::CounterClockwise);
-        sceGuShadeModel(ShadingModel::Smooth);
-        let row = |x, y, z, w| ScePspIVector4 { x, y, z, w };
-        sceGuSetDither(&ScePspIMatrix4 { x: row(-4, 0, -3, 1), y: row(2, -2, 3, -1), z: row(-3, 1, -4, 0), w: row(3, -1, 2, -2) });
-        sceGuEnable(GuState::Dither);
-        sceGuTexWrap(GuTexWrapMode::Repeat, GuTexWrapMode::Clamp);
-        sceGuBlendFunc(BlendOp::Add, BlendFactor::SrcAlpha, BlendFactor::OneMinusSrcAlpha, 0, 0);
-        sceGuLightMode(LightMode::SingleColor);
-        sceGuColorMaterial(LightComponent::AMBIENT | LightComponent::DIFFUSE);
-        sceGuFinish();
-        sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
-        sceDisplayWaitVblankStart();
-        sceGuDisplay(true);
-
         Ok(Gfx {
             tex,
             pages,
             vtx,
             idx,
             clip,
-            _models: models,
             scout,
             titans,
-            _font_bytes: font_bytes,
             font_tex,
             font,
             sky_vb,
@@ -537,11 +582,11 @@ impl Gfx {
     }
 
     /// Builds and submits the frame's display list. The GE draws it while the caller prepares the next frame.
-    pub unsafe fn frame(&mut self, game: &mut Game, world: &World, ticks: u32, perf: &maneuver_handheld::game::Perf) {
+    pub unsafe fn frame(&mut self, game: &mut Game, world: &World, ticks: u32, perf: &maneuver_handheld::game::Perf, ui: &Ui) {
         self.stats = Stats::default();
         self.no_clip = game.set.option & 4 != 0;
         let mut mark = sceKernelGetSystemTimeLow();
-        let mut phase = [0u32; 7];
+        let mut phase = [0u32; 8];
         let mut lap = |i: usize| {
             let now = sceKernelGetSystemTimeLow();
             phase[i] = now.wrapping_sub(mark);
@@ -715,16 +760,10 @@ impl Gfx {
         }
 
         lap(5);
-        // ------------------------------------------------------------ interface
+        // ------------------------------------------------------------ marks on the world
         sceGuDisable(GuState::DepthTest);
         sceGuDisable(GuState::Fog);
         sceGuDisable(GuState::CullFace);
-        sceGuEnable(GuState::Blend);
-        sceGuEnable(GuState::Texture2D);
-        sceGuTexMode(TexturePixelFormat::Psm4444, 0, 0, 1);
-        sceGuTexImage(MipmapLevel::None, self.font.width as i32, self.font.height as i32, self.font.width as i32, self.font_tex.cast());
-        sceGuTexFilter(TextureFilter::Nearest, TextureFilter::Nearest);
-        sceGuTexWrap(GuTexWrapMode::Clamp, GuTexWrapMode::Clamp);
         let hv = sceGuGetMemory((MAX_QUADS * 4 * core::mem::size_of::<HudVertex>()) as i32) as *mut HudVertex;
         let quads = {
             let mut p = *perf;
@@ -732,17 +771,32 @@ impl Gfx {
             p.tris = self.stats.tris;
             game.measure(&p);
             let mut hud = Hud::new(&self.font, core::slice::from_raw_parts_mut(hv, MAX_QUADS * 4), [1.0, 1.0], [0.0, 0.0]);
-            game.draw_hud(&mut hud, &vp);
+            game.draw_marks(&mut hud, &vp);
             hud.quads
         };
         if quads > 0 {
+            sceGuEnable(GuState::Blend);
+            sceGuEnable(GuState::Texture2D);
+            sceGuTexMode(TexturePixelFormat::Psm4444, 0, 0, 1);
+            sceGuTexImage(MipmapLevel::None, self.font.width as i32, self.font.height as i32, self.font.width as i32, self.font_tex.cast());
+            sceGuTexFilter(TextureFilter::Nearest, TextureFilter::Nearest);
+            sceGuTexWrap(GuTexWrapMode::Clamp, GuTexWrapMode::Clamp);
             flush(hv, quads * 4 * core::mem::size_of::<HudVertex>());
             sceGuDrawArray(GuPrimitive::Triangles, vtype_hud(), (quads * 6) as i32, self.quad_ib.as_ptr().cast(), hv.cast());
             self.stats.draws += 1;
         }
         sceGuDisable(GuState::Blend);
-        sceGuFinish();
         lap(6);
+        // ------------------------------------------------------------ interface
+        // PocketJS's GE backend sets blending and texturing for itself and leaves both off; it
+        // draws in screen coordinates, which the wrap mode, the texture scale and the matrices do not touch.
+        sceGuTexWrap(GuTexWrapMode::Clamp, GuTexWrapMode::Clamp);
+        // `option=8` leaves it out, for measuring what it costs the GE.
+        if game.set.option & 8 == 0 {
+            ui.draw();
+        }
+        sceGuFinish();
+        lap(7);
         self.stats.phase = phase;
     }
 }

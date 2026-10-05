@@ -13,7 +13,16 @@ name = "maneuver-handheld"
 version = "0.1.0"
 dependencies = [
  "libm",
+ "maneuver-interface",
  "maneuver-pack",
+ "maneuver-sim",
+]
+
+[[package]]
+name = "maneuver-interface"
+version = "0.1.0"
+dependencies = [
+ "libm",
  "maneuver-sim",
 ]
 
@@ -22,6 +31,7 @@ name = "maneuver-n3ds-core"
 version = "0.1.0"
 dependencies = [
  "maneuver-handheld",
+ "maneuver-interface",
  "maneuver-pack",
  "maneuver-sim",
 ]

@@ -783,7 +783,10 @@ pub fn assemble(lowered: Vec<Vec<Lowered>>, stream_near: bool, vertex_bytes: usi
 
 // ---------------------------------------------------------------- the map
 
-/// The town from above for the 3DS's lower screen: every collision triangle
+/// Half the side of the square of world the map shows, metres.
+pub const MAP_EXTENT: f32 = 620.0;
+
+/// The town from above, for the interface's map: every collision triangle
 /// drawn top-down, the highest surface winning, coloured by what it is and lit
 /// by the sun. `MAPT` is `width`, `height`, the half-extent in metres as f32,
 /// a zero, then RGB565 texels in row order with north (-z) up.

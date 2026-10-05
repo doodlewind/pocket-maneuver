@@ -1,18 +1,21 @@
 #!/usr/bin/env bun
-// Pocket Maneuver on PSP: build the PRX with PocketJS's pinned rust-psp
-// toolchain, stage it with the pack on a PSPLINK share, start it, steer and
-// measure it.
+// Pocket Maneuver on PSP: compile the interface (ui/) for the PSP, build the
+// PRX with PocketJS's pinned rust-psp toolchain, stage both with the pack on a
+// PSPLINK share, start it, steer and measure it.
 //
-//   bun tools/psp.ts build                    # psp/ → dist/psp/{pocket-maneuver.prx,EBOOT.PBP}
+//   bun tools/psp.ts build                    # ui/ + psp/ → dist/psp/{pocket-maneuver.prx,EBOOT.PBP,maneuver.js,maneuver.pak}
 //   bun tools/psp.ts serve                    # start usbhostfs_pc (detached, logged) when none is running
 //   bun tools/psp.ts run [--no-build]         # build, stage, reset PSPLINK, wait for it to reconnect, start the PRX
 //   bun tools/psp.ts status
-//   bun tools/psp.ts ctl "auto=1 stats=1"     # host0:/maneuver/control.txt (see Game::control)
+//   bun tools/psp.ts ctl "mode=play stats=1"  # host0:/maneuver/control.txt (see Game::control; `press=<mask>`,
+//                                             # `rest=<turns>` and `ui=start|pause|resume|restart|title` reach the interface)
 //   bun tools/psp.ts capture [--out f.png]    # PSPLINK screenshot
 //   bun tools/psp.ts bench [--seconds 60]     # autopilot frame timings → .pocket-build/validation/psp/
 //   bun tools/psp.ts package                  # dist/psp/PSP/GAME/PocketManeuver for a Memory Stick
-//   bun tools/psp.ts emu [--frames 240] [--ctl "view=..."] [--out f.png] [--standalone]
-//                                             # the same PRX in PPSSPPHeadless (software GE): a frame and its status
+//   bun tools/psp.ts emu [--frames 240] [--ctl "view=..."] [--out f.png] [--standalone] [--small] [--keep] [--no-interface] [--pack FILE]
+//                                             # the same PRX in PPSSPPHeadless (software GE): a frame and its status;
+//                                             # --small runs it with the 24 MB of a PSP-1000, where the world leaves
+//                                             # no room for the interface; --keep leaves interface.json from the last run
 //
 // One usbhostfs_pc owns the PSP's cable. If one is running (in any checkout),
 // these commands use its directory; `--share DIR` names another. Device
@@ -21,18 +24,20 @@
 import { $ } from "bun";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { extractHostBuildInputs, hostBuildEnvironment } from "../vendor/pocketjs/framework/src/manifest/index.ts";
 import { withDeviceLease } from "../vendor/pocketjs/tools/device-lease.ts";
 import { encodePng } from "./png.ts";
+import { compileInterface, type Interface } from "./ui.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const OUT = resolve(ROOT, "dist/psp");
-const PACK = resolve(ROOT, ".pocket-build/world/walled-town.psp60.pack");
 const argv = process.argv.slice(2);
 const cmd = argv[0] ?? "";
 const opt = (key: string, fallback: string) => {
   const at = argv.indexOf(key);
   return at < 0 ? fallback : (argv[at + 1] ?? fallback);
 };
+const PACK = resolve(opt("--pack", `${ROOT}/.pocket-build/world/walled-town.psp60.pack`));
 const port = opt("--port", "10000");
 
 /** The directory the running usbhostfs_pc serves, if there is one. */
@@ -53,20 +58,111 @@ function connections(): number | undefined {
   return (readFileSync(HOST_LOG, "utf8").match(/Connected to device/g) ?? []).length;
 }
 
+/** The interface's bundle and its pak: the program reads them beside the pack. */
+const UI_FILES = ["maneuver.js", "maneuver.pak"];
+
+/** The interface compiled for the PSP; the last compiled one when `ui/` does not compile just now. */
+async function interfaceBundle(): Promise<Interface> {
+  try {
+    return await compileInterface("psp");
+  } catch (e) {
+    const directory = `${ROOT}/.pocket-build/ui/psp`;
+    if (!UI_FILES.every((f) => existsSync(`${directory}/${f}`)) || !existsSync(`${directory}/plan.json`)) throw e;
+    console.warn(`psp: ui/ did not compile (${String(e).split("\n")[0]}); using the bundle already in ${directory}`);
+    const plan = JSON.parse(readFileSync(`${directory}/plan.json`, "utf8"));
+    return { directory, plan, inputs: extractHostBuildInputs(plan) };
+  }
+}
+
+/** A PARAM.SFO: keys in order, 32-bit integers and NUL-terminated strings padded to four bytes. */
+function paramSfo(values: Record<string, number | string>): Buffer {
+  const keys = Object.keys(values).sort();
+  const data = keys.map((key) => {
+    const value = values[key]!;
+    if (typeof value === "number") {
+      const bytes = Buffer.alloc(4);
+      bytes.writeUInt32LE(value);
+      return { format: 0x0404, used: 4, bytes };
+    }
+    const text = Buffer.from(value + "\0");
+    return { format: 0x0204, used: text.length, bytes: Buffer.concat([text, Buffer.alloc((4 - (text.length % 4)) % 4)]) };
+  });
+  const names = Buffer.from(keys.map((key) => key + "\0").join(""));
+  const keyTable = 20 + keys.length * 16;
+  const dataTable = keyTable + Math.ceil(names.length / 4) * 4;
+  const out = Buffer.alloc(dataTable + data.reduce((sum, d) => sum + d.bytes.length, 0));
+  out.write("\0PSF");
+  out.writeUInt32LE(0x101, 4);
+  out.writeUInt32LE(keyTable, 8);
+  out.writeUInt32LE(dataTable, 12);
+  out.writeUInt32LE(keys.length, 16);
+  let nameAt = 0;
+  let dataAt = 0;
+  keys.forEach((key, i) => {
+    const at = 20 + i * 16;
+    const d = data[i]!;
+    out.writeUInt16LE(nameAt, at);
+    out.writeUInt16LE(d.format, at + 2);
+    out.writeUInt32LE(d.used, at + 4);
+    out.writeUInt32LE(d.bytes.length, at + 8);
+    out.writeUInt32LE(dataAt, at + 12);
+    d.bytes.copy(out, dataTable + dataAt);
+    nameAt += key.length + 1;
+    dataAt += d.bytes.length;
+  });
+  names.copy(out, keyTable);
+  return out;
+}
+
+/**
+ * Packs the PRX as an EBOOT. `large` asks for the 52 MB of a PSP-2000 or later (cargo-psp has no
+ * setting for it): the world and the interface together need more than a PSP-1000's 24 MB, where
+ * the program runs without the interface.
+ */
+async function pbp(out: string, prx: string, large: boolean) {
+  const sfo = `${out}.SFO`;
+  writeFileSync(sfo, paramSfo({ BOOTABLE: 1, CATEGORY: "MG", DISC_VERSION: "1.00", ...(large ? { MEMSIZE: 1 } : {}), PARENTAL_LEVEL: 1, PSP_SYSTEM_VER: "1.00", REGION: 0x8000, TITLE: "Pocket Maneuver" }));
+  await $`pack-pbp ${out} ${sfo} ${ROOT}/psp/assets/icon0.png NULL NULL ${ROOT}/psp/assets/pic1.png NULL ${prx} NULL`.quiet();
+  rmSync(sfo, { force: true });
+}
+
 async function build() {
+  const ui = await interfaceBundle();
   // Loaded by path at run time: PocketJS's toolchain module resolves its manifest through its own tsconfig.
   const toolchain: string = `${ROOT}/vendor/pocketjs/tools/psp-toolchain.ts`;
   const tc = (await import(toolchain)).resolvePspBuildToolchain();
+  // The interface's runtime (PocketJS's PSP host library) builds QuickJS from C for the same target, with
+  // PocketJS's own flags for it, and checks the target it was compiled for against the interface's plan.
   await $`${tc.rustup} run ${tc.manifest.rust.toolchain} cargo psp --release`.cwd(`${ROOT}/psp`).env({
     ...tc.environment,
+    RUSTFLAGS: "-A linker-messages -A unexpected-cfgs -A unstable-name-collisions",
+    CRATE_CC_NO_DEFAULTS: "1",
+    TARGET_CC: "clang",
+    TARGET_AR: `${tc.llvmBin}/llvm-ar`,
+    TARGET_CFLAGS:
+      `-target mipsel-sony-psp -mcpu=mips2 -msingle-float -mlittle-endian -mno-abicalls -fno-pic -G0 -mno-check-zero-division ` +
+      `-fno-stack-protector -O2 -I${tc.sdk.path}/psp/include -I${tc.sdk.path}/psp/sdk/include`,
+    AR_mipsel_sony_psp: `${tc.llvmBin}/llvm-ar`,
+    RANLIB_mipsel_sony_psp: `${tc.llvmBin}/llvm-ranlib`,
+    ...hostBuildEnvironment(ui.inputs, { outputDirectory: ui.directory, embedApp: false }),
+    POCKETJS_OFFLOAD_SLOT: "",
     RUST_PSP_ABORT_ONLY: "1",
     RUST_PSP_TARGET: `${ROOT}/vendor/pocketjs/hosts/psp/targets/mipsel-sony-psp.json`,
   });
   const from = `${ROOT}/psp/target/mipsel-sony-psp/release`;
   mkdirSync(OUT, { recursive: true });
   cpSync(`${from}/pocket-maneuver-psp.prx`, `${OUT}/pocket-maneuver.prx`);
-  cpSync(`${from}/EBOOT.PBP`, `${OUT}/EBOOT.PBP`);
-  console.log(`psp: ${OUT}/pocket-maneuver.prx ${(readFileSync(`${OUT}/pocket-maneuver.prx`).length / 1024).toFixed(0)} KiB`);
+  await pbp(`${OUT}/EBOOT.PBP`, `${OUT}/pocket-maneuver.prx`, true);
+  for (const f of UI_FILES) cpSync(`${ui.directory}/${f}`, `${OUT}/${f}`);
+  console.log(`psp: ${OUT}/pocket-maneuver.prx ${(readFileSync(`${OUT}/pocket-maneuver.prx`).length / 1024).toFixed(0)} KiB, interface ${UI_FILES.map((f) => `${f} ${(readFileSync(`${OUT}/${f}`).length / 1024).toFixed(0)} KiB`).join(", ")}`);
+}
+
+/** Puts the interface's files in `dir` when they differ from the built ones. */
+function stageInterface(dir: string) {
+  for (const f of UI_FILES) {
+    if (!existsSync(`${OUT}/${f}`)) throw new Error(`no ${OUT}/${f}: run \`bun tools/psp.ts build\` first`);
+    if (!existsSync(`${dir}/${f}`) || sha(`${dir}/${f}`) !== sha(`${OUT}/${f}`)) cpSync(`${OUT}/${f}`, `${dir}/${f}`);
+  }
 }
 
 function sha(path: string): string {
@@ -78,7 +174,8 @@ function stage() {
   mkdirSync(app, { recursive: true });
   if (!existsSync(`${app}/world.pack`) || sha(`${app}/world.pack`) !== sha(PACK)) cpSync(PACK, `${app}/world.pack`);
   cpSync(`${OUT}/pocket-maneuver.prx`, `${share}/pocket-maneuver.prx`);
-  writeFileSync(`${app}/build.json`, JSON.stringify({ prxSha256: sha(`${OUT}/pocket-maneuver.prx`), packSha256: sha(PACK) }, null, 1));
+  stageInterface(app);
+  writeFileSync(`${app}/build.json`, JSON.stringify({ prxSha256: sha(`${OUT}/pocket-maneuver.prx`), packSha256: sha(PACK), interfaceSha256: Object.fromEntries(UI_FILES.map((f) => [f, sha(`${OUT}/${f}`)])) }, null, 1));
 }
 
 async function pspsh(text: string): Promise<string> {
@@ -153,7 +250,8 @@ async function capture(out: string) {
 }
 
 async function bench(seconds: number, extra: string) {
-  ctl(`auto=1 reset=1 view=off ${extra}`);
+  // Play flown by the autopilot: the load of the route, with the interface showing what a player sees.
+  ctl(`mode=play auto=1 reset=1 view=off ${extra}`);
   await Bun.sleep(3000);
   const first = readStatus();
   const build = JSON.parse(readFileSync(`${app}/build.json`, "utf8"));
@@ -164,7 +262,7 @@ async function bench(seconds: number, extra: string) {
     await Bun.sleep(1000);
     const s = readStatus();
     if (s.frames === prev.frames) continue;
-    samples.push({ t: (Date.now() - start) / 1000, frameMs: s.frameMs, worstMs: s.worstMs, late: s.late, frames: s.frames, cpuMs: s.cpuMs, gpuMs: s.gpuMs, draws: s.draws, tris: s.tris, clip: s.clip, cells: s.cells, player: s.player });
+    samples.push({ t: (Date.now() - start) / 1000, frameMs: s.frameMs, worstMs: s.worstMs, late: s.late, frames: s.frames, cpuMs: s.cpuMs, gpuMs: s.gpuMs, draws: s.draws, tris: s.tris, clip: s.clip, cells: s.cells, interface: s.interface, phaseMs: s.phaseMs, player: s.player });
     prev = s;
   }
   if (samples.length < 2) throw new Error("no samples: is the game on screen?");
@@ -282,7 +380,13 @@ switch (cmd) {
     const packAt = standalone ? `${root}/world.pack` : `${root}/maneuver/world.pack`;
     rmSync(standalone ? `${root}/maneuver/world.pack` : `${root}/world.pack`, { force: true });
     if (!existsSync(packAt) || sha(packAt) !== sha(PACK)) cpSync(PACK, packAt);
-    cpSync(`${OUT}/EBOOT.PBP`, `${root}/EBOOT.PBP`);
+    // The interface's files and what it kept go where the pack is.
+    // `--keep` leaves what the interface kept in the last run (`interface.json`) for this one to read.
+    for (const f of [...UI_FILES, ...(argv.includes("--keep") ? [] : ["interface.json"])]) for (const dir of [root, `${root}/maneuver`]) rmSync(`${dir}/${f}`, { force: true });
+    if (!argv.includes("--no-interface")) stageInterface(standalone ? root : `${root}/maneuver`);
+    // `--small`: without the request for large memory the emulator gives the program a PSP-1000's 24 MB.
+    if (argv.includes("--small")) await pbp(`${root}/EBOOT.PBP`, `${OUT}/pocket-maneuver.prx`, false);
+    else cpSync(`${OUT}/EBOOT.PBP`, `${root}/EBOOT.PBP`);
     const frames = Number(opt("--frames", "240"));
     for (const f of ["status.json", "shot.raw"]) rmSync(`${root}/maneuver/${f}`, { force: true });
     writeFileSync(`${root}/maneuver/boot.txt`, `stats=1 ${opt("--ctl", "")} shot=${frames} exit=${frames + 3}\n`);
@@ -308,6 +412,7 @@ switch (cmd) {
     mkdirSync(dir, { recursive: true });
     cpSync(`${OUT}/EBOOT.PBP`, `${dir}/EBOOT.PBP`);
     cpSync(PACK, `${dir}/world.pack`);
+    stageInterface(dir);
     console.log(`psp: copy ${OUT}/PSP to the root of a Memory Stick`);
     break;
   }

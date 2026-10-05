@@ -1,15 +1,22 @@
 // Pocket Maneuver on PS Vita: build the native runtime, replace the running
 // development container's binary over PocketJS's wired debug transport
-// (vendor/pocketjs), sync the pack, steer and measure.
+// (vendor/pocketjs), sync the pack and the interface, steer and measure.
 //
 //   bun tools/maneuver.ts build  [--title P3B1D7273] [--debug]
-//   bun tools/maneuver.ts sync                       # pack → host0:maneuver/
+//   bun tools/maneuver.ts sync                       # pack and compiled interface → host0:maneuver/
 //   bun tools/maneuver.ts native                     # sync + build + USB SELF replacement
 //   bun tools/maneuver.ts serve                      # USB host (keep running)
 //   bun tools/maneuver.ts status | capture [--out f.png]
-//   bun tools/maneuver.ts ctl '{"auto":true}'        # host0:maneuver/control.json
+//   bun tools/maneuver.ts ctl '{"ui":"start"}'       # host0:maneuver/control.json
 //   bun tools/maneuver.ts bench [--seconds 60]       # autopilot frame timings → device.json
-//   bun tools/maneuver.ts vpk                        # standalone PKMV00001 package: pack and programs inside
+//   bun tools/maneuver.ts vpk                        # standalone PKMV00001 package: pack, interface and programs inside
+//
+// Control messages: `"ui": "start" | "pause" | "resume" | "restart" | "title"`
+// asks as the interface would; `"press": 8` (a mask of pad bits) or
+// `"press": ["down", "circle"]` presses buttons on the interface;
+// `{"mode": "play", "auto": true}` is play flown by the autopilot; the
+// renderer's switches (`hud stats sound world actors cullCw profile`,
+// `lodNear lodMid repeat`, `post`, `view`, `reset`) are as before.
 //   bun tools/maneuver.ts push-vpk [file.vpk]        # → ux0:data/pocket-maneuver/ via the development build
 //   bun tools/maneuver.ts hold [--take|--release]    # keep the console for this repository across commands
 //
@@ -26,6 +33,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { resolve } from "node:path";
 import { packageVitaVpk } from "../vendor/pocketjs/tools/vita-package.ts";
 import { prepareVitaUsb } from "../vendor/pocketjs/tools/vita-usb.ts";
+import { compileInterface } from "./ui.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const POCKETJS = resolve(ROOT, "vendor/pocketjs");
@@ -39,6 +47,8 @@ const BIN = "pocket-maneuver-vita";
 /** The Devkit installed on the development console: vitaTitleId("dev.pocket-stack.devkit"). Builds of PocketJS after the pocket-nexus rename install as P25BFE5E2. */
 const DEVKIT = "P3B1D7273";
 export const PACK = resolve(ROOT, ".pocket-build/world/walled-town.vita60.pack");
+/** The compiled interface (`bun tools/ui.ts vita`), which the device reads beside the pack. */
+const INTERFACE = ["maneuver.js", "maneuver.pak"];
 
 export interface VitaOptions {
   argv: string[];
@@ -154,23 +164,27 @@ export async function dev(argv: string[], ...args: string[]): Promise<void> {
   await $`bun ${POCKETJS}/tools/vita-dev.ts ${args} --runtime ${OUT_DIR}/${c.output}.runtime.json --title ${c.title} --dir ${c.share}`.cwd(POCKETJS).env({ ...process.env, ...leaseEnv() });
 }
 
-/** Copies the pack to the share unless the same bytes are already there. */
-export function sync(argv: string[]): void {
+/** Compiles the interface, then copies it and the pack to the share: each file unless the same bytes are already there. */
+export async function sync(argv: string[]): Promise<void> {
   const c = context(argv);
   // The device never creates directories on host0:; every directory it writes into exists up front.
   for (const dir of ["", "gxp"]) mkdirSync(`${c.appShare}/${dir}`, { recursive: true });
   if (!existsSync(PACK)) throw new Error(`no pack at ${PACK}: run \`bun tools/maneuver.ts cook\` first`);
-  const dst = `${c.appShare}/world.pack`;
   const sha = (p: string) => createHash("sha256").update(readFileSync(p)).digest("hex");
-  if (!existsSync(dst) || sha(dst) !== sha(PACK)) {
-    cpSync(PACK, dst);
-    console.log(`maneuver: synced world.pack to ${c.appShare}`);
-  }
+  const copy = (src: string, name: string) => {
+    const dst = `${c.appShare}/${name}`;
+    if (existsSync(dst) && sha(dst) === sha(src)) return;
+    cpSync(src, dst);
+    console.log(`maneuver: synced ${name} to ${c.appShare}`);
+  };
+  copy(PACK, "world.pack");
+  const ui = await compileInterface("vita");
+  for (const name of INTERFACE) copy(`${ui.directory}/${name}`, name);
 }
 
 /**
- * The standalone package: the pack and the programs the device compiled go
- * inside the VPK, and the build carries no USB debug driver.
+ * The standalone package: the pack, the interface and the programs the device
+ * compiled go inside the VPK, and the build carries no USB debug driver.
  */
 export async function vpk(argv: string[]): Promise<void> {
   const c = context(argv);
@@ -188,7 +202,9 @@ export async function vpk(argv: string[]): Promise<void> {
     cpSync(gxp, `${stage}/gxp/${h}.gxp`);
   }
   cpSync(PACK, `${stage}/world.pack`);
-  console.log(`maneuver: staged ${hashes.length} programs and the pack in ${stage}`);
+  const ui = await compileInterface("vita");
+  for (const name of INTERFACE) cpSync(`${ui.directory}/${name}`, `${stage}/${name}`);
+  console.log(`maneuver: staged ${hashes.length} programs, the pack and the interface in ${stage}`);
   await build([...argv.filter((a) => a !== "--standalone"), "--standalone"], stage);
 }
 
