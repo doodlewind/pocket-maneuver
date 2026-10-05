@@ -16,6 +16,7 @@
  *   bun tools/ipod.ts ctl "mode=play auto=1"  words for the shell and for Game::control (see ipod/src/main.c)
  *   bun tools/ipod.ts capture [--out PNG]     the frame as presented, interface and all
  *   bun tools/ipod.ts title [--out PNG]       launches, and brings back the Pocket3D title card's held frame
+ *   bun tools/ipod.ts reset                   stops the app and removes what it kept (best time, settings)
  *   bun tools/ipod.ts bench [--seconds 60] [--ctl "lodMid=120"]   play flown by the autopilot: frame timings → .pocket-build/validation/ipod/
  *
  * The device is the one connected iPod4,1 (or POCKETJS_IPODTOUCH4_UDID), over
@@ -188,7 +189,8 @@ const status = (d: Device) => JSON.parse(d.ssh(`cat ${shellQuote(d.tmp() + "/sta
  * `ps`; `find` answers the question.
  */
 async function waitForScreen(d: Device) {
-  const own = d.tmp();
+  // The installer reports the container under /private; `find` lists it without.
+  const own = d.tmp().replace(/^\/private/, "");
   for (let attempt = 0; attempt < 15; attempt++) {
     const seen = d.ssh(`find /var/mobile/Applications/*/tmp -maxdepth 1 -type f -mmin -3 ! -name 'status.json*'; true`)
       .split("\n").filter((line) => line && !line.startsWith(own));
@@ -275,6 +277,12 @@ else if (command === "status") await device((d) => console.log(JSON.stringify(st
 else if (command === "ctl") await device(async (d) => console.log(JSON.stringify(await control(d, args[1] ?? ""))));
 else if (command === "capture") await device((d) => capture(d, resolve(option("--out", join(validation, "capture.png")))));
 else if (command === "title") await device((d) => titleCard(d, resolve(option("--out", join(validation, "title.png")))));
+else if (command === "reset") await device((d) => {
+  // As after a first install: the app stopped, nothing kept from earlier runs (the best time, the settings).
+  const home = d.tmp().replace(/\/tmp$/, "");
+  d.ssh(`killall ${executableName} 2>/dev/null; rm -f ${shellQuote(home + "/Documents/interface.json")} ${shellQuote(home + "/tmp")}/*; true`);
+  console.log(d.ssh(`ls -la ${shellQuote(home + "/Documents")} ${shellQuote(home + "/tmp")}`));
+});
 else if (command === "bench") {
   // Play with the autopilot at the controls, so the frame carries what a
   // player's does: the marks on the world and the interface's play screen.
@@ -298,4 +306,4 @@ else if (command === "bench") {
     console.log(join(directory, "device.json"));
     console.log(JSON.stringify(summary, null, 1));
   });
-} else throw new Error("usage: cook | build | package | deploy | native [--pack] | launch | status | ctl WORDS | capture [--out PNG] | title [--out PNG] | bench [--seconds N] [--ctl WORDS]");
+} else throw new Error("usage: cook | build | package | deploy | native [--pack] | launch | status | ctl WORDS | capture [--out PNG] | title [--out PNG] | reset | bench [--seconds N] [--ctl WORDS]");
