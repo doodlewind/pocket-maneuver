@@ -13,6 +13,7 @@ resolver = "2"
 [dependencies]
 pocketjs-vita = { path = "../vendor/pocketjs/hosts/vita", default-features = false }
 pocket-vita-gxm = { path = "../vendor/pocketjs/devices/vita/pocket-vita-gxm", features = ["runtime-compiler"] }
+pocket3d-title = { path = "../vendor/pocketjs/engine/pocket3d/crates/pocket3d-title" }
 maneuver-sim = { path = "../crates/maneuver-sim" }
 maneuver-pack = { path = "../crates/maneuver-pack" }
 # The interface (ui/): its protocol, the game's flow, and the channel the PocketJS guest opens in the process.

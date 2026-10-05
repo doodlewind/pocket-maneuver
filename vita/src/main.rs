@@ -415,6 +415,10 @@ fn main() {
             2 => Msaa::X2,
             _ => Msaa::None,
         };
+        // The Pocket3D title card plays before the renderer starts. A development build skips it with {"title": false}.
+        if !(live && boot["title"] == Value::Bool(false)) {
+            pocket3d_title::vita::play();
+        }
         if let Err(error) = graphics::init_with_pool(POOL_BYTES) {
             pocketjs_vita::vita_log(format_args!("maneuver: graphics {error}"));
             return;

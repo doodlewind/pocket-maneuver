@@ -11,6 +11,7 @@ BUILD := $(ROOT)/.pocket-build/3ds/build
 SOURCE := $(ROOT)/n3ds/src
 POCKET := $(ROOT)/vendor/pocketjs/hosts/3ds
 PICA_KERNEL := $(ROOT)/vendor/pocketjs/devices/3ds/pocket-3ds-pica/include
+TITLE := $(ROOT)/vendor/pocketjs/engine/pocket3d/crates/pocket3d-title
 CORE := $(ROOT)/n3ds/core/target/armv6k-nintendo-3ds/release/libmaneuver_n3ds_core.a
 # The interface is a PocketJS guest: PocketJS's UI core (a Rust static library,
 # built on the host like core/), QuickJS (built in this container by
@@ -27,7 +28,7 @@ ROMFS := $(ROOT)/.pocket-build/3ds/romfs
 ARCH := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 CFLAGS := -O3 -g -Wall -Wextra -std=gnu11 -ffunction-sections -fdata-sections -mword-relocations $(ARCH) \
   -D__3DS__ -DJS_NO_NAN_BOXING -DPOCKETJS_RUNTIME_SLOT='"pocket-maneuver"' \
-  -include $(BUILD)/config.h -I$(SOURCE) -I$(BUILD) -I$(POCKET)/src -I$(POCKET)/include -I$(PICA_KERNEL) -I$(QUICKJS) -I$(DEVKITPRO)/libctru/include -I$(DEVKITPRO)/portlibs/3ds/include
+  -include $(BUILD)/config.h -I$(SOURCE) -I$(BUILD) -I$(POCKET)/src -I$(POCKET)/include -I$(PICA_KERNEL) -I$(TITLE)/include -I$(QUICKJS) -I$(DEVKITPRO)/libctru/include -I$(DEVKITPRO)/portlibs/3ds/include
 LDFLAGS := -specs=3dsx.specs $(ARCH) -Wl,--gc-sections -Wl,-Map,$(BUILD)/maneuver.map
 SHADERS := world color skin hud
 OWN := main.o render.o guest.o
