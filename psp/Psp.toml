@@ -1,3 +1,3 @@
 title = "Pocket Maneuver"
-xmb_icon_png = "assets/icon0.png"
+xmb_icon_png = "../vendor/pocketjs/engine/pocket3d/icon/psp/ICON0.PNG"
 xmb_background_png = "assets/pic1.png"

@@ -21,6 +21,8 @@ The repository holds the whole path from authoring to hardware:
 
 PocketJS (pinned in `vendor/pocketjs`) supplies the device toolchains, the Vita dev host and GXM kernel, the 3DS dev wire and VPK packaging.
 
+It also supplies the app icon. Every console's launcher shows the **Pocket3D icon** from `vendor/pocketjs/engine/pocket3d/icon/`, and this repository holds no icon file: `psp/Psp.toml` and `tools/psp.ts` name `psp/ICON0.PNG` (144 × 80), `tools/vita.ts` gives the VPK packager `vita/icon0.png` (128 × 128, indexed), `n3ds/Makefile` gives `smdhtool` `3ds/icon.png` and `3ds/icon-small.png` (48 × 48 and 24 × 24), and `tools/ipod.ts` copies `ios/Icon.png` and `ios/Icon@2x.png` (57 × 57 and 114 × 114) into the bundle. The picture behind the icon on the XMB (`psp/assets/pic1.png`) and the LiveArea pictures (`vita/assets`) are captures of the game.
+
 ## The world
 
 `web/src/world/city.ts` lays the town out on a radial plan: a central square, **eight bands of blocks** between ring streets, four avenues to the gates, a canal ring with eight bridges, and a **50 m wall** with a walk on top. Row houses line every block around a yard: two to four storeys, timber-framed or stone-dressed, gable to the street or eaves to the street, with jetties and chimneys in the detailed level. Landmarks take whole blocks: a town hall with a clock tower, a cathedral with two 74 m spires, a keep, a market hall, six watch towers. Outside the wall are fields, farmsteads and a stand of sixty-four trees 56–86 m tall with limbs to perch on.
@@ -256,6 +258,7 @@ bun tools/ui.ts preview [device…]      # every screen as a picture → .pocket
 bun tools/ui.ts test                   # the flow against a mock renderer, on every device's bundle
 
 cargo test --workspace
+bun test ./tools/icon.test.ts          # no icon file in the repository; every build names PocketJS's
 cargo run --release -p maneuver-sim --bin harness -- .pocket-build/world/ir/world.mvsw 600 [--wav out.wav]
 ```
 
@@ -279,7 +282,7 @@ Toolchains: VitaSDK and `cargo-vita`; rust-psp's `cargo psp` (PocketJS's pinned 
 | `crates/maneuver-interface` | the interface's protocol, the game's flow (`Session`), the in-process channel for a PocketJS guest |
 | `ui/` | the interface: `pocket.json` (presentations), `app/` (protocol, state, shared parts, one presentation per device shape), `test/` (mock renderer, previews, flow test) |
 | `vita/` | Vita app and its Cg programs; LiveArea art under `vita/assets` |
-| `psp/` | PSP program: GE renderer, cell reader, exact-size memory, the interface's guest, sound |
+| `psp/` | PSP program: GE renderer, cell reader, exact-size memory, the interface's guest, sound; the XMB background under `psp/assets` |
 | `n3ds/` | 3DS program: C host and renderer, PICA shaders, the Rust core |
 | `ipod/` | iPod touch program: C shell and OpenGL ES 2 renderer; `core/` builds the 3DS core's source for the device |
 | `profiles/` | compile profiles |

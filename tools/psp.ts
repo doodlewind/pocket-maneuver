@@ -26,6 +26,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { resolve } from "node:path";
 import { extractHostBuildInputs, hostBuildEnvironment } from "../vendor/pocketjs/framework/src/manifest/index.ts";
 import { withDeviceLease } from "../vendor/pocketjs/tools/device-lease.ts";
+import { POCKET3D_ICON } from "../vendor/pocketjs/tools/pocket3d-icon.ts";
 import { encodePng } from "./png.ts";
 import { compileInterface, type Interface } from "./ui.ts";
 
@@ -117,12 +118,13 @@ function paramSfo(values: Record<string, number | string>): Buffer {
 /**
  * Packs the PRX as an EBOOT. `large` asks for the 52 MB of a PSP-2000 or later (cargo-psp has no
  * setting for it): the world and the interface together need more than a PSP-1000's 24 MB, where
- * the program runs without the interface.
+ * the program runs without the interface. ICON0.PNG is the Pocket3D icon from PocketJS; PIC1.PNG is
+ * the game's own capture.
  */
 async function pbp(out: string, prx: string, large: boolean) {
   const sfo = `${out}.SFO`;
   writeFileSync(sfo, paramSfo({ BOOTABLE: 1, CATEGORY: "MG", DISC_VERSION: "1.00", ...(large ? { MEMSIZE: 1 } : {}), PARENTAL_LEVEL: 1, PSP_SYSTEM_VER: "1.00", REGION: 0x8000, TITLE: "Pocket Maneuver" }));
-  await $`pack-pbp ${out} ${sfo} ${ROOT}/psp/assets/icon0.png NULL NULL ${ROOT}/psp/assets/pic1.png NULL ${prx} NULL`.quiet();
+  await $`pack-pbp ${out} ${sfo} ${POCKET3D_ICON.psp} NULL NULL ${ROOT}/psp/assets/pic1.png NULL ${prx} NULL`.quiet();
   rmSync(sfo, { force: true });
 }
 

@@ -31,6 +31,7 @@ import { $ } from "bun";
 import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { POCKET3D_ICON } from "../vendor/pocketjs/tools/pocket3d-icon.ts";
 import { packageVitaVpk } from "../vendor/pocketjs/tools/vita-package.ts";
 import { prepareVitaUsb } from "../vendor/pocketjs/tools/vita-usb.ts";
 import { compileInterface } from "./ui.ts";
@@ -97,7 +98,8 @@ export async function build(argv: string[], assets?: string): Promise<string> {
   // Unsafe-homebrew SELF: loading the USB driver and writing the inactive native slot need the standard homebrew permissions.
   await $`${vitasdk}/bin/vita-make-fself ${target}/${BIN}.velf ${eboot}`;
   await $`${vitasdk}/bin/vita-mksfoex -d ATTRIBUTE2=12 -s TITLE_ID=${c.title} ${"Pocket Maneuver"} ${sfo}`;
-  await packageVitaVpk({ tool: `${vitasdk}/bin/vita-pack-vpk`, sfo, eboot, output: vpk, usbDriver: usb?.driver, applicationAssets: assets ?? `${APP_DIR}/assets` });
+  // The bubble's icon is the Pocket3D icon from PocketJS; the asset tree holds the LiveArea pictures, which are the game's own.
+  await packageVitaVpk({ tool: `${vitasdk}/bin/vita-pack-vpk`, sfo, eboot, output: vpk, usbDriver: usb?.driver, applicationAssets: assets ?? `${APP_DIR}/assets`, icon: POCKET3D_ICON.vita });
 
   mkdirSync(OUT_DIR, { recursive: true });
   cpSync(vpk, `${OUT_DIR}/${c.output}.vpk`);

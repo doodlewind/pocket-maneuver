@@ -26,6 +26,7 @@ import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { IPOD_INSTALLER, parseInstalledIPodApp, shellQuote, userDeploymentScript } from "../vendor/pocketjs/tools/ipodtouch4-installation";
 import { IPODTOUCH4_TOOLCHAIN, inspectIPodTouch4Toolchain, ipodtouch4CacheRoot, ipodtouch4CsuPath, ipodtouch4QuickJsPath, ipodtouch4SysrootPath } from "../vendor/pocketjs/tools/ipodtouch4-toolchain";
+import { POCKET3D_ICON } from "../vendor/pocketjs/tools/pocket3d-icon.ts";
 import { compileInterface } from "./ui.ts";
 
 const root = resolve(import.meta.dir, "..");
@@ -132,8 +133,9 @@ async function build() {
     // `launch` opens the app through its own URL scheme.
     CFBundleURLTypes: `<array><dict><key>CFBundleURLSchemes</key><array>${text(bundleId)}</array></dict></array>`,
   })}</dict></plist>\n`);
-  for (const [name, size] of [["Icon.png", "57x57"], ["Icon@2x.png", "114x114"]])
-    run(["magick", join(root, "vita/assets/sce_sys/icon0.png"), "-resize", size, "-define", "png:exclude-chunk=date,time", join(bundle, name)]);
+  // SpringBoard's icon is the Pocket3D icon from PocketJS, at both sizes, as the files are.
+  cpSync(POCKET3D_ICON.ios, join(bundle, "Icon.png"));
+  cpSync(POCKET3D_ICON.ios2x, join(bundle, "Icon@2x.png"));
   for (const file of ["maneuver.js", "maneuver.pak"]) cpSync(join(ui.directory, file), join(bundle, file));
   cpSync(pack, join(bundle, "world.pack"));
   rmSync(join(out, "PocketManeuver.ipa"), { force: true });
