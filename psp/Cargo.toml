@@ -19,6 +19,7 @@ maneuver-interface = { path = "../crates/maneuver-interface", default-features =
 maneuver-sim = { path = "../crates/maneuver-sim", default-features = false, features = ["hw-sqrt", "single-float"] }
 maneuver-pack = { path = "../crates/maneuver-pack", default-features = false }
 maneuver-handheld = { path = "../crates/maneuver-handheld", default-features = false }
+pocket3d-title = { path = "../vendor/pocketjs/engine/pocket3d/crates/pocket3d-title" }
 libm = "0.2"
 
 [profile.release]

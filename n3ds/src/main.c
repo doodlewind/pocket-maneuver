@@ -23,6 +23,7 @@
 #include <citro3d.h>
 #include <malloc.h>
 #include <math.h>
+#include <pocket3d_title.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -479,6 +480,8 @@ static void read_pad(MhPad *pad) {
 int main(void) {
   gfxInitDefault();
   gfxSet3D(false);
+  /* The Pocket3D title card, on both screens, before the GPU is set up. */
+  pocket3d_title_play();
   mkdir("sdmc:/pocket-maneuver", 0777);
   boot_log = fopen("sdmc:/pocket-maneuver/boot.log", "w");
   say("Pocket Maneuver " MANEUVER_BUILD_ID);
