@@ -5,8 +5,8 @@
 //! receipt next to the pack records the source, the profile, every section's
 //! size and hash, and the statistics a frame budget is argued from.
 //!
-//! The profile's `target` picks the lowering: `vita` (this file), or `psp` and
-//! `3ds` (`handheld`).
+//! The profile's `target` picks the lowering: `vita` (this file), or `psp`,
+//! `3ds` and `ipod` (`handheld`).
 //!
 //! `maneuver-cook --in <WorldIR dir> --out <pack> --profile <json> --font <ttf>`
 //! `maneuver-cook --in <WorldIR dir> --map <file> [--map-size <pixels>]` writes the town from above alone.
@@ -38,7 +38,7 @@ struct Profile {
     bake: BakeProfile,
     limits: Limits,
     font: FontProfile,
-    /// Present for the `psp` and `3ds` targets.
+    /// Present for the `psp`, `3ds` and `ipod` targets.
     #[serde(default)]
     handheld: Option<handheld::Handheld>,
 }
@@ -200,7 +200,8 @@ fn run() -> Result<(), String> {
         ("vita", None) if profile.texture.format == "bc1" => None,
         ("psp", Some(h)) => Some((handheld::Target::Psp, h.clone())),
         ("3ds", Some(h)) => Some((handheld::Target::Pica, h.clone())),
-        _ => return Err(format!("profile {}: target is vita (bc1 textures, no handheld block), psp or 3ds (with a handheld block)", profile.name)),
+        ("ipod", Some(h)) => Some((handheld::Target::Gles, h.clone())),
+        _ => return Err(format!("profile {}: target is vita (bc1 textures, no handheld block), psp, 3ds or ipod (with a handheld block)", profile.name)),
     };
     let ir = ir::load(&input)?;
     let sim = maneuver_sim::worldfile::load(&ir.world).map_err(|e| format!("world.mvsw: {e}"))?;
@@ -361,7 +362,12 @@ fn cook_handheld(c: Cooked, target: handheld::Target, h: &handheld::Handheld) ->
     let (profile, ir) = (c.profile, c.ir);
     let format = handheld::format_of(&profile.texture.format)?;
     let psp = target == handheld::Target::Psp;
-    if psp != matches!(format, pack::tex_format::PSP_DXT1 | pack::tex_format::PSP_5650 | pack::tex_format::PSP_T8) {
+    let fits = match target {
+        handheld::Target::Psp => matches!(format, pack::tex_format::PSP_DXT1 | pack::tex_format::PSP_5650 | pack::tex_format::PSP_T8),
+        handheld::Target::Pica => format == pack::tex_format::PICA_RGB565,
+        handheld::Target::Gles => format == pack::tex_format::GLES_RGB565,
+    };
+    if !fits {
         return Err(format!("profile {}: texture format {} is not one of target {}", profile.name, profile.texture.format, profile.target));
     }
 
@@ -389,7 +395,7 @@ fn cook_handheld(c: Cooked, target: handheld::Target, h: &handheld::Handheld) ->
     let lower_ms = t.elapsed().as_millis();
 
     let (model_bytes, model_stats) = handheld::models(ir, &h.models, target)?;
-    // The PSP reads the collision grid as built; the 3DS has the memory to build it and a 32 MiB package to fit.
+    // The PSP reads the collision grid as built; the 3DS and the iPod touch have the memory to build it, and the 3DS a 32 MiB package to fit.
     let simg = if psp { maneuver_sim::worldfile::write_built(c.sim) } else { ir.world.clone() };
     let scene = handheld::scene(&ir.scene_json, h, profile.presentation.render, pages, c.sim.dummies.len() as u32)?;
 
@@ -428,9 +434,9 @@ fn cook_handheld(c: Cooked, target: handheld::Target, h: &handheld::Handheld) ->
         (pack::FONT, &font),
         (if psp { pack::SIMG } else { pack::SIMW }, &simg),
     ];
-    // The 3DS shows the town from above on its lower screen.
-    let map = if psp { Vec::new() } else { handheld::map(&c.sim.world, ir.scene.sun_dir, 240, handheld::MAP_EXTENT) };
-    if !psp {
+    // The town from above, in the 3DS pack since its lower screen was drawn from it.
+    let map = if target == handheld::Target::Pica { handheld::map(&c.sim.world, ir.scene.sun_dir, 240, handheld::MAP_EXTENT) } else { Vec::new() };
+    if target == handheld::Target::Pica {
         sections.push((pack::MAPT, &map));
     }
     if h.stream_near {

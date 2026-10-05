@@ -86,6 +86,8 @@ pub const CLIP_REACH: f32 = 3.3;
 pub enum Target {
     Psp,
     Pica,
+    /// OpenGL ES 2 (the iPod touch): the PICA's vertices, meshes and models, with texels in row order.
+    Gles,
 }
 
 pub struct Lowered {
@@ -163,10 +165,10 @@ pub fn lower(parts: &[(&Mesh, &Vec<[u8; 4]>)], kind: u32, cx: i32, cz: i32, h: &
                     // Over the mesh's own bounds.
                     Target::Psp => (((v[a] - min[a]) / (max[a] - min[a]) * 65535.0 + 0.5).clamp(0.0, 65535.0) as i32 - 32768) as i16,
                     // On the world's grid.
-                    Target::Pica => {
+                    Target::Pica | Target::Gles => {
                         let q = (v[a] / step).round();
                         if q.abs() > 32767.0 {
-                            return Err(format!("a vertex of cell {cx},{cz} at {} m is outside the 3DS position grid", v[a]));
+                            return Err(format!("a vertex of cell {cx},{cz} at {} m is outside the position grid", v[a]));
                         }
                         q as i16
                     }
@@ -183,7 +185,7 @@ pub fn lower(parts: &[(&Mesh, &Vec<[u8; 4]>)], kind: u32, cx: i32, cz: i32, h: &
                     let c = (color[0] as u16 >> 3) | ((color[1] as u16 >> 2) << 5) | ((color[2] as u16 >> 3) << 11);
                     vtx.extend_from_slice(pack::bytes_of(&PspVertex { uv, color: c, pos: [pos[0], pos[1], pos[2]] }));
                 }
-                Target::Pica => vtx.extend_from_slice(pack::bytes_of(&PicaVertex { uv: [uv[0] as i16, uv[1] as i16], color: *color, pos })),
+                Target::Pica | Target::Gles => vtx.extend_from_slice(pack::bytes_of(&PicaVertex { uv: [uv[0] as i16, uv[1] as i16], color: *color, pos })),
             }
         }
         // Small triangles first; large ones after, in groups of neighbours (at most 4 × 4 over the mesh,
@@ -326,21 +328,23 @@ fn encode(format: u32, rgba: &[u8], w: usize, h: usize) -> Result<Vec<u8>, Strin
             }
             Ok(psp_swizzle(&bytes, w * 2, h))
         }
-        tex_format::PICA_RGB565 | tex_format::PICA_RGBA4 => {
-            if w < 8 || h < 8 {
+        tex_format::PICA_RGB565 | tex_format::PICA_RGBA4 | tex_format::GLES_RGB565 | tex_format::GLES_RGBA4 => {
+            let tiled = matches!(format, tex_format::PICA_RGB565 | tex_format::PICA_RGBA4);
+            if tiled && (w < 8 || h < 8) {
                 return Err(format!("a tiled level of {w} × {h} texels is smaller than a tile"));
             }
             let texels: Vec<u16> = (0..w * h)
                 .map(|i| {
                     let (r, g, b, a) = px(i);
-                    if format == tex_format::PICA_RGB565 {
+                    if matches!(format, tex_format::PICA_RGB565 | tex_format::GLES_RGB565) {
                         ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
                     } else {
                         ((r >> 4) << 12) | ((g >> 4) << 8) | ((b >> 4) << 4) | (a >> 4)
                     }
                 })
                 .collect();
-            Ok(pica_tile(&texels, w, h))
+            // OpenGL ES takes the rows as they are: the first one is at v = 0, where the PICA has the tiled last one.
+            Ok(if tiled { pica_tile(&texels, w, h) } else { texels.iter().flat_map(|t| t.to_le_bytes()).collect() })
         }
         f => Err(format!("texture format {f} is not a handheld format")),
     }
@@ -352,7 +356,8 @@ pub fn format_of(name: &str) -> Result<u32, String> {
         "psp-5650" => tex_format::PSP_5650,
         "psp-t8" => tex_format::PSP_T8,
         "pica-rgb565" => tex_format::PICA_RGB565,
-        other => return Err(format!("texture format {other:?} is not one of psp-dxt1, psp-5650, psp-t8, pica-rgb565")),
+        "gles-rgb565" => tex_format::GLES_RGB565,
+        other => return Err(format!("texture format {other:?} is not one of psp-dxt1, psp-5650, psp-t8, pica-rgb565, gles-rgb565")),
     })
 }
 
@@ -484,7 +489,11 @@ pub fn font(a8: &[u8], target: Target) -> Result<Vec<u8>, String> {
     for (x, y) in [(w - 1, h - 1), (w - 2, h - 1), (w - 1, h - 2), (w - 2, h - 2)] {
         rgba[(y * w + x) * 4 + 3] = 255;
     }
-    let format = if target == Target::Psp { tex_format::PSP_4444 } else { tex_format::PICA_RGBA4 };
+    let format = match target {
+        Target::Psp => tex_format::PSP_4444,
+        Target::Pica => tex_format::PICA_RGBA4,
+        Target::Gles => tex_format::GLES_RGBA4,
+    };
     let mut out = pack::bytes_of(&FontHeader { pad: format, ..head }).to_vec();
     out.extend_from_slice(&a8[core::mem::size_of::<FontHeader>()..table]);
     while out.len() % 16 != 0 {
