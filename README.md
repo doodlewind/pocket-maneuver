@@ -353,6 +353,25 @@ Starting a package without a development link: `bun tools/psp.ts emu --standalon
 - The browser tab reads the whole pack (30.7 MB) before its first frame of the world: 17.7 s on a line of 16 Mbit/s. It has been run in Chrome on one Mac; no other browser, no phone and no other GPU has drawn it, and nobody has judged its sound by ear.
 - The town has no townsfolk, carts or birds.
 
+## Remixing this game
+
+The source is public, and Pocket Studio lets anyone with an account remix the game: start a game of their own from a copy of it. The game's card in Pocket Studio has **Remix**, which writes a prompt for a coding agent; from a terminal linked to an account it is
+
+```sh
+pocket-studio remix maneuver
+```
+
+It clones this repository (depth 1, `vendor/pocketjs` at its pinned commit) into `./pocket-maneuver-remix/` and registers a Pocket Studio project of the remixer's that names this game as the one it came from, in `.pocket-studio.json` there. `bun tools/release.ts --upload`, `bun tools/wgpu.ts dist` with `pocket-studio site`, and `bun tools/listing.ts --upload` then send to that project, not to this game.
+
+**A remix gives itself a name and an identity before it publishes**, so its packages install beside this game's and not over them:
+
+- The title, "Pocket Maneuver", and its forms without the space and in lower case.
+- The app id `dev.pocket-nexus.maneuver`: the Vita's title id and the 3DS's card folder are made from it by PocketJS, and the iPod's bundle id is it.
+- The Vita title id `PKMV00001`: nine characters, four capital letters and five digits, its own.
+- The folders the game keeps data in on a card: `ux0:data/pocket-maneuver`.
+
+They are in `ipod/README.md`, `ipod/src/main.c`, `n3ds/Makefile`, `n3ds/src/main.c`, `package.json`, `psp/Cargo.toml`, `psp/Psp.toml`, `psp/src/main.rs`, `tools/ipod.ts`, `tools/listing.ts`, `tools/maneuver.ts`, `tools/n3ds.ts`, `tools/psp.ts`, `tools/release.ts`, `tools/ui.ts`, `tools/vita.ts`, `tools/wgpu.ts`, `ui/app/main-dual.tsx`, `ui/app/main-touch.tsx`, `ui/app/main.tsx`, `ui/pocket.json`, `vita/Cargo.toml`, `vita/src/main.rs`, `vita/src/paths.rs`, `web/index.html`, `web/package.json`, `web/src/main.ts`, `wgpu/Cargo.toml`, `wgpu/README.md`, `wgpu/page/index.html`, `wgpu/page/main.js`, `wgpu/src/lib.rs`. A web build goes live at the project's own address only once Pocket Nexus has verified the project; packages and the listing need no mark.
+
 ## License
 
 MIT
