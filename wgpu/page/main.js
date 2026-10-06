@@ -34,10 +34,10 @@ import init, { Maneuver, shapes } from "./pkg/maneuver_wgpu.js";
 // what the player says beside the device's name: how this picture differs from the one that device's
 // own build draws (README, the table of devices and "Compile").
 const DEVICES = [
-  { id: "vita", label: "PS Vita", sticks: 2, note: "This page draws the PS Vita build's own world and passes: its houses and models, its bloom, light shafts and grade. A PS Vita compiles its own programs for them." },
-  { id: "psp", label: "PSP", sticks: 1, note: "On a PSP the picture has 16-bit colour with dither, the models have about an eighth of the triangles, and there is no bloom and no light shafts. This page draws the PS Vita build's world at the PSP's size." },
-  { id: "3ds", label: "Nintendo 3DS", sticks: 1, note: "On a 3DS the models have about a sixth of the triangles, and there is no bloom and no light shafts. This page draws the PS Vita build's world at the 3DS's size." },
-  { id: "ipod", label: "iPod touch", sticks: 0, note: "On an iPod touch 4 the models have about an eighth of the triangles, and there is no bloom and no light shafts. This page draws the PS Vita build's world at the iPod touch's size." },
+  { id: "vita", label: "PS Vita", sticks: 2, note: { en: "This page draws the PS Vita build's own world and passes: its houses and models, its bloom, light shafts and grade. A PS Vita compiles its own programs for them.", ja: "このページは PS Vita 版そのものの世界と描画パスで描いています。家やモデル、ブルーム、光の筋、色調補正もそのままです。PS Vita はそのためのシェーダーを本体でコンパイルします。" } },
+  { id: "psp", label: "PSP", sticks: 1, note: { en: "On a PSP the picture has 16-bit colour with dither, the models have about an eighth of the triangles, and there is no bloom and no light shafts. This page draws the PS Vita build's world at the PSP's size.", ja: "PSP では画面がディザ付きの 16 ビットカラーになり、モデルのポリゴン数は約 8 分の 1 で、ブルームと光の筋はありません。このページは PS Vita 版の世界を PSP の画面サイズで描いています。" } },
+  { id: "3ds", label: "Nintendo 3DS", sticks: 1, note: { en: "On a 3DS the models have about a sixth of the triangles, and there is no bloom and no light shafts. This page draws the PS Vita build's world at the 3DS's size.", ja: "3DS ではモデルのポリゴン数が約 6 分の 1 になり、ブルームと光の筋はありません。このページは PS Vita 版の世界を 3DS の画面サイズで描いています。" } },
+  { id: "ipod", label: "iPod touch", sticks: 0, note: { en: "On an iPod touch 4 the models have about an eighth of the triangles, and there is no bloom and no light shafts. This page draws the PS Vita build's world at the iPod touch's size.", ja: "iPod touch 4 ではモデルのポリゴン数が約 8 分の 1 になり、ブルームと光の筋はありません。このページは PS Vita 版の世界を iPod touch の画面サイズで描いています。" } },
 ];
 // Where the interface's best time and settings are kept between visits (a device keeps them in a file).
 const KEPT = "pocket-maneuver.interface";
@@ -54,7 +54,7 @@ let device = DEVICES.find((d) => d.id === wanted) ?? DEVICES.find((d) => d.id ==
 let present = () => {};
 const player = createPlayer({
   title: "Pocket Maneuver",
-  tagline: "Two wires, a tank of gas, a walled town.",
+  tagline: { en: "Two wires, a tank of gas, a walled town.", ja: "ワイヤー二本と、ガスのタンクと、城壁に囲まれた町。" },
   devices: DEVICES,
   device: device.id,
   // (the targets `bun tools/release.ts` builds a package for)
@@ -78,7 +78,7 @@ async function start() {
   const title = titleCard(playTitle);
   if (!hasWebGPU()) {
     await title;
-    say("This browser has no WebGPU, which Pocket Maneuver draws with.");
+    say({ en: "This browser has no WebGPU, which Pocket Maneuver draws with.", ja: "このブラウザは WebGPU に対応していません。Pocket Maneuver の描画には WebGPU が必要です。" });
     return;
   }
   await init();

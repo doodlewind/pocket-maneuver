@@ -271,6 +271,7 @@ bun tools/ipod.ts ctl "mode=play auto=1"
 bun tools/wgpu.ts cook | build | serve [--port 8801] | dist | check [--dist]
 bun tools/wgpu.ts shot --frames 600 --words "mode=play auto=1" --out f.png   # a frame on this machine's GPU
 bun tools/listing.ts [--upload]        # the listing's clips and stills → dist/listing/
+bun tools/listing.ts --words           # dist/listing/listing.json from the words, for the pictures already there
 
 # Packages for Pocket Studio (Releases, below)
 bun tools/release.ts [--targets vita,psp,3ds,ipod-touch] [--no-build] [--upload]
@@ -337,7 +338,7 @@ Starting a package without a development link: `bun tools/psp.ts emu --standalon
 | `n3ds/` | 3DS program: C host and renderer, PICA shaders, the Rust core |
 | `ipod/` | iPod touch program: C shell and OpenGL ES 2 renderer; `core/` builds the 3DS core's source for the device |
 | `wgpu/` | the browser's program: the wgpu renderer (the PS Vita's passes in WGSL), the shell around the simulation, the page, and the program that writes frames to files |
-| `listing/` | the words of the game's listing on Pocket Studio, and how each of its pictures is recorded |
+| `listing/` | the words of the game's listing on Pocket Studio, in English and in Japanese (`translations.ja`), and how each of its pictures is recorded |
 | `profiles/` | compile profiles |
 | `tools/` | `maneuver.ts`, `vita.ts`, `psp.ts`, `n3ds.ts`, `ipod.ts`, `ui.ts`, `wgpu.ts`, `listing.ts`, `bench.ts`, `shot.ts`, `release.ts` |
 

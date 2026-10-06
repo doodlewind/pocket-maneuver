@@ -4,6 +4,7 @@
 //
 //   bun tools/listing.ts [--only NAME…]   → dist/listing/: listing.json, the clips and their posters,
 //                                           the stills, the share picture
+//   bun tools/listing.ts --words          listing.json alone, for the pictures already in dist/listing/
 //   bun tools/listing.ts --upload         the same, then `pocket-studio listing dist/listing`, run here,
 //                                         where `pocket-studio register` wrote .pocket-studio.json.
 //                                         POCKET_STUDIO_CLI names the command when it is not on PATH.
@@ -38,17 +39,40 @@ const LIMIT = { clip: 12 << 20, seconds: [6, 30], still: 2 << 20, card: 1 << 20,
 
 type Take = { words?: string; from?: number; frames?: number; poster?: number; frame?: number; size?: [number, number]; page?: string; steps?: [string, number][] };
 type Entry = { kind: "video" | "image"; file: string; poster?: string; caption: string; take: Take };
-type Source = { tagline: string; description: string[]; media: Entry[]; card: { file: string; take: Take } };
+type Source = { tagline: string; description: string[]; media: Entry[]; card: { file: string; take: Take }; translations?: Translations };
+
+/**
+ * The listing's words in another language (the contract, version 1.1): `translations.<lang>` may hold a
+ * tagline, the description's paragraphs and a caption a picture, each under the English limits. A word
+ * it leaves out is shown in English.
+ */
+type Translations = Record<string, { tagline?: string; description?: string[]; captions?: Record<string, string> }>;
+function translationFaults(media: { file: string }[], translations: Translations | undefined): string[] {
+  const faults: string[] = [];
+  const files = new Set(media.map((entry) => entry.file));
+  for (const [lang, words] of Object.entries(translations ?? {})) {
+    if (!/^[a-z]{2}$/.test(lang)) faults.push(`translations: "${lang}" is not a language`);
+    if (words.tagline !== undefined && (!words.tagline || words.tagline.length > 120)) faults.push(`translations.${lang}: the tagline is one sentence of at most 120 characters`);
+    if (words.description !== undefined && (words.description.length < 1 || words.description.length > 6 || words.description.some((p) => !p || p.length > 600))) faults.push(`translations.${lang}: the description is one to six paragraphs of at most 600 characters`);
+    for (const [file, caption] of Object.entries(words.captions ?? {})) {
+      if (!files.has(file)) faults.push(`translations.${lang}: a caption for ${file}, which the listing does not name`);
+      if (!caption || caption.length > 140) faults.push(`translations.${lang}: the caption of ${file} has at most 140 characters`);
+    }
+  }
+  return faults;
+}
 
 const rest = process.argv.slice(2);
 const only = rest.flatMap((flag, i) => (flag === "--only" && rest[i + 1] ? [rest[i + 1]!] : []));
-const wanted = (file: string) => only.length === 0 || only.some((name) => file.startsWith(name));
+// (--words: the words change and the pictures stay; nothing is recorded)
+const words = rest.includes("--words");
+const wanted = (file: string) => !words && (only.length === 0 || only.some((name) => file.startsWith(name)));
 const source = JSON.parse(readFileSync(join(ROOT, "listing/listing.json"), "utf8")) as Source;
-if (!existsSync(PACK)) throw new Error(`${PACK} is missing: bun tools/wgpu.ts cook`);
+if (!words && !existsSync(PACK)) throw new Error(`${PACK} is missing: bun tools/wgpu.ts cook`);
 if (!Bun.which("ffmpeg")) throw new Error("ffmpeg is not on PATH");
 mkdirSync(OUT, { recursive: true });
 mkdirSync(WORK, { recursive: true });
-const program = await shotProgram();
+const program = words ? "" : await shotProgram();
 
 /** A PNG as a JPEG of the same pixels. */
 async function jpeg(png: string, out: string, quality = 2) {
@@ -107,7 +131,7 @@ for (const entry of source.media) {
   else if (!entry.take.page) await still(join(OUT, entry.file), entry.take, entry.take.size ?? [WIDTH, HEIGHT]);
   console.log(`listing: ${entry.file}`);
 }
-await pages(source.media.filter((entry) => entry.take.page && wanted(entry.file)));
+if (!words) await pages(source.media.filter((entry) => entry.take.page && wanted(entry.file)));
 if (wanted(source.card.file)) {
   // (the share picture: coarser steps until it is under the limit)
   for (const quality of [2, 3, 4, 6]) {
@@ -157,7 +181,8 @@ refuse("the first picture is the lead: a clip", source.media[0]?.kind === "video
 refuse(`a tagline of ${source.tagline.length} characters`, source.tagline.length <= LIMIT.tagline);
 refuse(`${source.description.length} paragraphs`, source.description.length >= LIMIT.paragraphs[0]! && source.description.length <= LIMIT.paragraphs[1]! && source.description.every((p) => p.length <= LIMIT.paragraph));
 refuse(`${total} bytes in all`, total <= LIMIT.total);
-writeFileSync(join(OUT, "listing.json"), JSON.stringify({ tagline: source.tagline, description: source.description, media, card: source.card.file }, null, 2) + "\n");
+for (const fault of translationFaults(source.media, source.translations)) refuse(fault, false);
+writeFileSync(join(OUT, "listing.json"), JSON.stringify({ tagline: source.tagline, description: source.description, media, card: source.card.file, ...(source.translations ? { translations: source.translations } : {}) }, null, 2) + "\n");
 console.table(media.map((m) => ({ file: m.file, size: `${m.width}x${m.height}`, seconds: "seconds" in m ? m.seconds : "", kB: Math.round(statSync(join(OUT, m.file)).size / 1000) })));
 console.log(`listing: ${OUT} (${media.length} pictures, ${(total / 1e6).toFixed(1)} MB with ${source.card.file})`);
 if (refused.length) throw new Error(`Pocket Studio would refuse the listing: ${refused.join("; ")}`);

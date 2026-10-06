@@ -67,6 +67,8 @@ The page shows one handheld at a time. A device is the renderer's shape (`SHAPES
 
 **The page is PocketJS's Pocket3D player** (`createPlayer` of the kernel): `page/index.html` has an empty body, and `main.js` says what the game is and draws into the player's canvas. Picking another device in play changes the shell and the screen's shape, starts that device's guest in a new realm and leaves the run as it is: the new guest is told the whole state on its first turn. The first device is the iPod touch for a browser whose pointer is a finger and the PS Vita otherwise (`?device=`).
 
+**The page speaks English and Japanese**, as PocketJS's player does (its README, "Languages"): `main.js` gives the game's sentence, each device's `note` and its own lines to the player as `{ en, ja }`; the player picks the language and shows the game's English for a word with no Japanese.
+
 **Whatever the device, the pack and the passes are the PS Vita's.** A PSP, a 3DS or an iPod touch draws its own pack with fewer triangles a model, no bloom and no light shafts; the page says so beside the device's name (`note` in `DEVICES` of `main.js`).
 
 What the buttons do is the game's, the same on every device with a pad (`Shape::pad`, from `session_pad` in `vita/src/main.rs` and `read_pad` in `psp/src/main.rs` and `n3ds/src/main.c`):
