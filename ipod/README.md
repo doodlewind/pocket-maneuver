@@ -13,6 +13,10 @@
 
 `bun tools/ipod.ts cook` (or `bun tools/maneuver.ts cook --profile ipod60`) lowers the world as for the 3DS (one position grid, runs of meshes on shared vertex bases, two bones per skinned vertex) and stores every texture as 16-bit texels in row order, the image's first row first: `UNSIGNED_SHORT_5_6_5` for the atlas pages and `UNSIGNED_SHORT_4_4_4_4` for the font. The profile takes the coarser model set (the player at 4 528 triangles, giants at 1 668 – 2 028 and 1 038 – 1 148) and draws at most six giants within 300 m; its detail distances are 64 m, 150 m and 1 000 m.
 
+## The launch
+
+The Pocket3D title card plays first, before the interface's guest starts and before the pack is read: 144 ticks, 2.4 s. PocketJS's drawers write a console's frame buffer, and this device has none a CPU writes, so the core draws each tick's frame into memory (`mh_title`, over `pocket3d_title::draw`) and the shell uploads it to a texture and shows it with the pass that lays the interface over a frame. A frame that differs from the last is uploaded; the held frames in the middle are not. The card follows the clock, so a slow frame skips a tick and the card keeps its length. `bun tools/ipod.ts title --out a.png` launches the app and brings back the held frame as the device presented it.
+
 ## The frame
 
 1. `mh_step`: what the interface asked for since the last frame, then one simulation tick per display refresh.

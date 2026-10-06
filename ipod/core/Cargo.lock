@@ -34,6 +34,7 @@ dependencies = [
  "maneuver-interface",
  "maneuver-pack",
  "maneuver-sim",
+ "pocket3d-title",
 ]
 
 [[package]]
@@ -46,3 +47,16 @@ version = "0.1.0"
 dependencies = [
  "libm",
 ]
+
+[[package]]
+name = "pocket3d-title"
+version = "0.1.0"
+dependencies = [
+ "vitasdk-sys",
+]
+
+[[package]]
+name = "vitasdk-sys"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "665d8a491ad572e0ebc103846c4a51e66b641c942391b7241f91c413a3a301a9"
