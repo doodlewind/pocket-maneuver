@@ -22,7 +22,10 @@ CORE := $(ROOT)/n3ds/core/target/armv6k-nintendo-3ds/release/libmaneuver_n3ds_co
 # quickjs.h.
 UI_CORE := $(ROOT)/.pocket-build/3ds/ui-core/armv6k-nintendo-3ds/release/libpocketjs_3ds_core.a
 QUICKJS := $(ROOT)/.pocket-build/3ds/quickjs
-ICON := $(SOURCE)/../icon.png
+# The Pocket3D icon, from PocketJS: the 48-pixel drawing and the 24-pixel one.
+# Given only the first, smdhtool halves it.
+ICON := $(ROOT)/vendor/pocketjs/engine/pocket3d/icon/3ds/icon.png
+SMALL_ICON := $(ROOT)/vendor/pocketjs/engine/pocket3d/icon/3ds/icon-small.png
 OUT := $(ROOT)/dist/3ds/pocket-maneuver.3dsx
 ROMFS := $(ROOT)/.pocket-build/3ds/romfs
 ARCH := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
@@ -60,8 +63,8 @@ $(BUILD)/qjs.o: $(POCKET)/src/qjs.c | $(BUILD)
 	$(CC) $(CFLAGS) -Ddevserver_active=guest_devtools -c $< -o $@
 $(BUILD)/maneuver.elf: $(OBJECTS) $(CORE) $(UI_CORE) $(QUICKJS)/libquickjs.a
 	$(CC) $(LDFLAGS) $(OBJECTS) $(CORE) $(UI_CORE) $(QUICKJS)/libquickjs.a -L$(DEVKITPRO)/libctru/lib -L$(DEVKITPRO)/portlibs/3ds/lib -lcitro3d -lmbedcrypto -lctru -lm -o $@
-$(BUILD)/maneuver.smdh: $(ICON) | $(BUILD)
-	$(DEVKITPRO)/tools/bin/smdhtool --create 'Pocket Maneuver' 'Wire gear over a walled town' 'Pocket Nexus' $< $@
+$(BUILD)/maneuver.smdh: $(ICON) $(SMALL_ICON) | $(BUILD)
+	$(DEVKITPRO)/tools/bin/smdhtool --create 'Pocket Maneuver' 'Wire gear over a walled town' 'Pocket Nexus' $(ICON) $@ $(SMALL_ICON)
 $(OUT): $(BUILD)/maneuver.elf $(BUILD)/maneuver.smdh $(ROMFS)/world.pack $(ROMFS)/maneuver.js $(ROMFS)/maneuver.pak
 	mkdir -p $(dir $@)
 	$(DEVKITPRO)/tools/bin/3dsxtool $< $@ --smdh=$(BUILD)/maneuver.smdh --romfs=$(ROMFS)

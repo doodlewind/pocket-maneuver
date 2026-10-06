@@ -443,7 +443,8 @@ fn main() {
             let scene = Scene::from_meta(&meta);
 
             shell.frame(Mode::Loading, "Preparing programs");
-            let mut gpu = Gpu::new(live)?;
+            // {"programs": "fresh"} is the pass that collects a package's programs (`programs` in tools/vita.ts).
+            let mut gpu = Gpu::new(live, live && boot["programs"] == "fresh")?;
             let fog = scene.fog_srgb();
             let defines = format!(
                 "#define FOG_COLOR half3({:.5}, {:.5}, {:.5})\n#define FOG_DENSITY {:.7}\n#define UV_SCALE {:.1}\n#define COLOR_SCALE {:.1}\n#define BONES {}\n",
@@ -681,7 +682,7 @@ fn main() {
                     "actors": {"draws": actor_stats.0, "tris": actor_stats.1},
                     "settings": {"auto": session.auto, "hud": set.hud, "stats": set.stats, "sound": set.sound, "invert": session.invert, "lodNear": set.lod_near, "lodMid": set.lod_mid, "cullCw": set.cull_cw, "profile": set.profile, "world": set.world, "actors": set.actors, "repeat": set.repeat, "post": {"bloom": set.look.bloom, "rays": set.look.rays, "speed": set.look.speed}},
                     "player": {"pos": [sim.p.pos.x, sim.p.pos.y, sim.p.pos.z], "speed": sim.speed(), "gas": sim.p.gas, "tick": sim.tick, "kills": sim.run.kills, "laps": sim.auto.laps, "waypoint": sim.auto.wp},
-                    "programs": {"compiled": gpu.compiled, "cached": gpu.cached},
+                    "programs": {"compiled": gpu.compiled, "cached": gpu.cached, "requested": gpu.manifest.len(), "fresh": gpu.fresh},
                     "msaa": samples,
                     "memory": {"geometry": world.bytes, "vram": vram.reserved()},
                     "clockMhz": [scePowerGetArmClockFrequency(), scePowerGetGpuClockFrequency()],

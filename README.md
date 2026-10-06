@@ -1,6 +1,6 @@
 # Pocket Maneuver
 
-A traversal game for the PS Vita, the PSP, the Nintendo 3DS and the iPod touch 4: two wire hooks, a tank of compressed gas and a walled town of about 5 400 houses, at **60 frames per second**.
+A traversal game for the PS Vita, the PSP, the Nintendo 3DS and the iPod touch 4: two wire hooks, a tank of compressed gas and a walled town of about 5 400 houses, at **60 frames per second**. A browser tab plays it too: the same simulation compiled to wasm32, with a wgpu renderer that draws the PS Vita's pack.
 
 The player fires a wire from each hip into a wall or a roof, is pulled along it, lets go and fires the next. Gas reels a wire in faster, or thrusts when no wire holds. Thirty-two giants, 10 to 16 m tall, stand in the streets and among the trees outside the wall; a giant falls when the player cuts the nape of its neck at speed.
 
@@ -10,6 +10,7 @@ The player fires a wire from each hip into a wall or a roof, is pulled along it,
 | Nintendo 3DS | 400 × 240, town map on the lower screen | PICA200 through citro3d | Old 3DS, 60 s: 3 652 frames, **8 late** (0.2 %), up to 52 600 triangles |
 | PSP | 480 × 272, 16-bit with dither | GE, fixed function | PSP 2000, 60 s: 3 510 frames, **93 late** (2.6 %), up to 22 300 triangles |
 | iPod touch 4 | 480 × 320, played by touch | OpenGL ES 2 on the SGX535 | 60 s: 3 570 frames, **31 late** (0.9 %), up to 36 500 triangles |
+| Browser tab | the screen of the handheld the page shows, 4× MSAA, the PS Vita's bloom, light shafts and graded composite | wgpu over WebGPU, the PS Vita's pack and passes | Chrome 154 on an M3 Max: 60 frames a second, 0.25 to 0.74 ms a frame, up to 251 900 triangles |
 
 The repository holds the whole path from authoring to hardware:
 
@@ -17,9 +18,12 @@ The repository holds the whole path from authoring to hardware:
 - **`crates/maneuver-sim`** is the game: collision, wire physics, camera, procedural animation, sound and the autopilot. The reference runs it as wasm; every device links it natively. There is one implementation of every rule.
 - **`crates/maneuver-cook`** compiles the world for a device profile: it bakes lighting into vertex colours, merges geometry into cells with levels of detail, encodes the atlas and the models in the device's formats and writes one pack with a compile receipt.
 - **`vita/`**, **`psp/`**, **`n3ds/`** and **`ipod/`** draw their pack and run the simulation at one tick per display refresh. **`crates/maneuver-handheld`** is the half of the PSP, 3DS and iPod runtimes that does not touch a GPU.
+- **`wgpu/`** draws the PS Vita's pack with wgpu: in a browser tab over WebGPU, inside PocketJS's Pocket3D player with the handhelds' shells, and on the build machine, where frames go to files. `wgpu/README.md` has the frame, what differs from the PS Vita's picture and the measurements.
 - **`ui/`** is the interface: one PocketJS app, compiled for each device and drawn over the scene by every runtime. **`crates/maneuver-interface`** is the renderer's side of it and the game's flow (title, play, pause, the finished run).
 
 PocketJS (pinned in `vendor/pocketjs`) supplies the device toolchains, the Vita dev host and GXM kernel, the 3DS dev wire and VPK packaging.
+
+It also supplies the app icon. Every console's launcher shows the **Pocket3D icon** from `vendor/pocketjs/engine/pocket3d/icon/`, and this repository holds no icon file: `psp/Psp.toml` and `tools/psp.ts` name `psp/ICON0.PNG` (144 × 80), `tools/vita.ts` gives the VPK packager `vita/icon0.png` (128 × 128, indexed), `n3ds/Makefile` gives `smdhtool` `3ds/icon.png` and `3ds/icon-small.png` (48 × 48 and 24 × 24), and `tools/ipod.ts` copies `ios/Icon.png` and `ios/Icon@2x.png` (57 × 57 and 114 × 114) into the bundle. The picture behind the icon on the XMB (`psp/assets/pic1.png`) and the LiveArea pictures (`vita/assets`) are captures of the game.
 
 ## The world
 
@@ -119,7 +123,7 @@ A presentation decides where things go and how large they are. What the gas gaug
 - **One program for the world**: atlas texel × baked light, then haze. Haze is a function of view depth computed per vertex, and its colour is a constant in the shader source, so a draw uploads one matrix.
 - **Skinning on the GPU**: 57 uniform rows (three per bone); the vertex program blends two bones and lights with the scene's sun and hemisphere.
 - **Post-processing**: the scene renders to a 960 × 544 target with 4× MSAA. A quarter-size pass keeps what is brighter than 0.86 luma, two passes blur it, one pass smears it away from the sun for light shafts, and the composite adds them, grades (contrast, saturation, split tone, vignette) and blurs toward the screen centre above 26 m/s. Every texture coordinate is computed in a vertex program.
-- **Programs** compile on the device through SceShaccCg on first run and are cached by source hash; the packaged build ships them.
+- **Programs** compile on the device through SceShaccCg on first run and are cached by source hash; the packaged build ships the set a pass on a console collected ([Releases](#releases)).
 - **Sound** is synthesized at 22.05 kHz from the simulation's state and events.
 - **The interface** is drawn by PocketJS's Vita host library into the display scene, after the composite and the world marks: 480 × 272 logical, rastered at 2×. Its vertices come from vita2d's pool, which each frame takes one half of in turn, so a frame's draws stay valid until the GPU has used them.
 
@@ -140,7 +144,7 @@ The GE has no programmable stage, 2 MB of video memory, a 16-bit depth buffer, t
 - **Two depth ranges**: the cells around the eye, the character and the near giants draw with a frustum from 0.4 m to 224 m and three quarters of the depth buffer; everything beyond draws with a frustum from 35 m and the last quarter; the sky draws last, at the far end, where nothing else was drawn.
 - **Clipping on the CPU**: the GE clips against the near plane only and drops a triangle with a vertex outside its 4096-pixel coordinate space, so the ground under the camera disappears. The compiler puts each mesh's triangles with an edge over 3 m at the end of its index list, in groups of neighbours (at most 4 × 4 over the mesh), the largest first inside a group, with a distance per triangle. The runtime measures its distance to each group and looks at the prefix that could reach the guard band from there: depth along the view decides most, the rest get their clip coordinates tested and are cut against a frustum twice the view's size (`maneuver_handheld::clip`). A frame looks at about 1 200 triangles and cuts under twenty.
 - **Cells on demand**: the detailed meshes (9.7 MB) stay in the pack. A second thread, lower in priority than the frame's, reads a cell (at most 48 KiB) into one of 16 buffers when the eye comes within 70 m; it runs while the frame waits for the GE. Until a cell arrives, its simple mesh draws.
-- **The frame overlaps the GE**: a frame builds its display list while the GE draws the previous one, then waits for it and swaps on the display refresh.
+- **The frame overlaps the GE**: a frame builds its display list while the GE draws the previous one, then waits for it and swaps on the display refresh. `sceGuStart` writes the list through the uncached mirror of its address, so the list is a `pocket_psp_ge::DisplayList`: aligned to a 64-byte data-cache line and sized in whole lines, it shares no line with a static the CPU writes through the cache, whose write-back would put the previous frame's first commands over this frame's.
 - **Memory**: PocketJS's arena is the allocator: one kernel block in power-of-two classes, which QuickJS's churn recycles in constant time. The world's buffers live for the whole run, so they take their exact size (`psp/src/mem.rs`): first as kernel blocks from the 2 MB the arena leaves the kernel, then from the arena's uncarved tail. The world holds about 18 MB.
 - **The interface** runs on PocketJS's PSP host library (QuickJS, the UI core, its GE backend) and takes about 4.3 MB beside the world, so the package asks for the larger user memory of the 2000 and later models (`MEMSIZE=1`: 53 MB free at the start). With 24 MB the guest is not started and the run's numbers are drawn from the pack's font. A turn is two halves on two frames, the script (4 to 6 ms) and then layout with the list of what it shows (2 to 2.7 ms), each beside the GE's work on the previous frame; its draw is the last pass of the list. In play the guest takes about 12 turns a second.
 - **Sound** at 11.025 kHz: the synthesizer costs about 3 µs a frame of sound on this CPU.
@@ -205,6 +209,17 @@ Measured on an iPod touch 4 (A4, iOS 6.1.6), play flown by the autopilot (`bun t
 
 CPU time per frame: simulation 2.2 ms, the guest's turn 0.6 ms, the interface's redraw 2.5 ms (about 6 ms on a frame that redraws), the scene's commands 2.4 ms.
 
+## In a browser tab
+
+`wgpu/` is the game for a tab: **`maneuver-sim` and `maneuver-interface` compiled to wasm32, a wgpu renderer over WebGPU that reads the PS Vita's pack and draws the PS Vita's passes, and PocketJS's Pocket3D player around it** (`vendor/pocketjs/devices/web/pocket-web-wgpu`). The reference in `web/` is where the world is generated; it is not what a visitor is given.
+
+- **The page shows the game as one of four handhelds** (PS Vita, PSP, Nintendo 3DS, iPod touch): that device's shell, its screen's size, its own bundle of `ui/` in a realm of the page, and its buttons from the keyboard, the shell's keys under a pointer, or a finger. The pack and the passes are the PS Vita's whatever the device; the page says beside the device's name how that device's own build differs.
+- **The Pocket3D title card plays first**, and the pack (30.7 MB) is read while it plays; the interface's loading screen counts what has arrived.
+- **The same renderer writes frames to files** on the build machine (`wgpu/src/bin/shot.rs`), a sixtieth of a second a frame: `bun tools/listing.ts` records the clips and stills of the game's listing on Pocket Studio that way (`listing/listing.json` holds the words and the takes; the pictures go to the ignored `dist/listing/`).
+- `bun tools/wgpu.ts dist` writes the directory a static host serves: 60 files, 38.1 MB, the pack in pieces of 2 MiB named by their hashes. `pocket-studio site .pocket-build/wgpu/dist` deploys it to the game's address on Pocket Studio, from the checkout `pocket-studio register` linked; `bun tools/listing.ts --upload` sends the listing the same way.
+
+`wgpu/README.md` names what differs from the PS Vita's picture (texels in place of BC1 blocks, packed vertex numbers scaled in the program, one composite program, the gas standing still under a pause).
+
 ## Controls
 
 | | Vita | PSP | 3DS | Keyboard |
@@ -237,6 +252,7 @@ bun tools/maneuver.ts native           # sync the pack, build, replace the binar
 bun tools/maneuver.ts status | capture --out f.png | bench --seconds 120
 bun tools/maneuver.ts ctl '{"auto":false,"view":{"pos":[0,64,612],"target":[0,20,0],"fov":62}}'
 bun tools/maneuver.ts vpk | push-vpk   # standalone PKMV00001 package; send it to ux0:data/pocket-maneuver/
+bun tools/maneuver.ts programs         # the console compiles every program in one run: the set a release carries
 
 # PSP (PSPLINK and usbhostfs_pc running)
 bun tools/psp.ts build | run | status | capture | bench --seconds 60 | package
@@ -248,8 +264,16 @@ bun tools/n3ds.ts build | install | status | capture | bench --seconds 90
 bun tools/n3ds.ts ctl "auto=0 stats=1"
 
 # iPod touch 4 (over SSH; PocketJS's pinned iOS 6 toolchain)
-bun tools/ipod.ts cook | deploy | native [--pack] | launch | status | capture --out f.png | bench --seconds 60
+bun tools/ipod.ts cook | deploy [--ipa FILE] | native [--pack] | launch | status | capture --out f.png | bench --seconds 60
 bun tools/ipod.ts ctl "mode=play auto=1"
+
+# A browser tab (wasm32-unknown-unknown and wasm-bindgen 0.2.126; Chrome for `check`)
+bun tools/wgpu.ts cook | build | serve [--port 8801] | dist | check [--dist]
+bun tools/wgpu.ts shot --frames 600 --words "mode=play auto=1" --out f.png   # a frame on this machine's GPU
+bun tools/listing.ts [--upload]        # the listing's clips and stills → dist/listing/
+
+# Packages for Pocket Studio (Releases, below)
+bun tools/release.ts [--targets vita,psp,3ds,ipod-touch] [--no-build] [--upload]
 
 # The interface
 bun tools/ui.ts psp|vita|3ds|ipod      # compile ui/ for one device → .pocket-build/ui/<device>/
@@ -257,6 +281,8 @@ bun tools/ui.ts preview [device…]      # every screen as a picture → .pocket
 bun tools/ui.ts test                   # the flow against a mock renderer, on every device's bundle
 
 cargo test --workspace
+cargo test --manifest-path wgpu/Cargo.toml
+bun test ./tools                       # no icon file in the repository and every build names PocketJS's; the check on the Vita's programs; the browser build's page and the listing's words
 cargo run --release -p maneuver-sim --bin harness -- .pocket-build/world/ir/world.mvsw 600 [--wav out.wav]
 ```
 
@@ -265,6 +291,33 @@ Vita `ctl` keys: `mode`, `auto`, `ui`, `press`, `reset`, `view {pos, target, fov
 On every device `mode=title|play|paused|results` sets the game's flow (`mode=play auto=1` is play flown by the autopilot: what `bench` measures), `ui=start|pause|resume|restart|title` asks what the interface would ask, and `press=<mask>` presses PocketJS buttons on the guest.
 
 Toolchains: VitaSDK and `cargo-vita`; rust-psp's `cargo psp` (PocketJS's pinned SDK); devkitARM in PocketJS's pinned container for the 3DS C code, and `armv6k-nintendo-3ds` with `build-std` for its Rust core; PocketJS's pinned iOS 6 sysroot with Xcode's clang and `ld-classic` for the iPod touch, and `armv7-apple-ios` with `build-std` for its core.
+
+## Releases
+
+`bun tools/release.ts` builds every device's package from the checked-out commit and writes them to `dist/release/`, which Git ignores:
+
+```
+bun tools/release.ts [--targets vita,psp,3ds,ipod-touch] [--out dist/release] [--vita-gxp DIR] [--no-build] [--upload]
+```
+
+| Target | File | Holds |
+| --- | --- | --- |
+| `vita` | `pocket-maneuver-<version>.vpk` | the program, the `vita60` pack, the interface and the programs a console compiled |
+| `psp` | `pocket-maneuver-<version>-psp.zip` | `PSP/GAME/PocketManeuver/` for the root of a Memory Stick: `EBOOT.PBP`, the `psp60` pack and the interface |
+| `3ds` | `pocket-maneuver-<version>.3dsx` | the program, with the `n3ds60` pack and the interface in its ROMFS |
+| `ipod-touch` | `pocket-maneuver-<version>-ipod.ipa` | `Payload/PocketManeuver.app`, with the `ipod60` pack and the interface |
+
+**It needs the toolchains of the four device tools** ([Commands](#commands)) and nothing else: the tool builds the simulation's wasm, exports the world from its seed, and for each target compiles the profile's pack with this commit's compiler and runs the build a developer runs (`tools/maneuver.ts vpk`, `tools/psp.ts package`, `tools/n3ds.ts build`, `tools/ipod.ts package`). The version is the one in `ui/pocket.json`. A target that fails is listed with its error, the other targets build, and the exit status is 1. Each target's build output is in `.pocket-build/release/logs/`.
+
+`release.json`, beside the packages, records **the commit, the version, each package's size and SHA-256, the SHA-256 of the exported world and of each pack, the Vita programs' list and the build that compiled them, and the toolchains**: the pinned PocketJS revision, the `rustc` of each target, VitaSDK's compiler and `version_info.txt`, the PSP SDK's hash and the devkitARM image's digest.
+
+**The Vita's programs are an input, collected by a pass on a console.** SceShaccCg runs on a console, so the package carries `.gxp` files a console compiled. The runtime asks for every program it has while it loads (the four of the scene and the six of the post-processing chain, 16 sources); no setting adds one later, and the multisampling choice changes how a program is patched, not its source. `bun tools/maneuver.ts programs` builds the development build from the checkout, starts it in Pocket Devkit with `{"programs": "fresh"}` in `boot.json`, so it reads no program from the card and compiles each one, waits until it runs, and writes the console's list, the `.gxp` files and `coverage.json` to `.pocket-build/vita-programs/`. `coverage.json` records the build's id, the pack's SHA-256, the SHA-256 of `vita/shaders`, and how many programs the build asked for and compiled. **The release tool refuses a set without that record**, and one whose record names other shader sources or another pack than the one it is packaging (`coverageFault` in `tools/vita.ts`, tested by `tools/vita-programs.test.ts`). The numeric `#define`s a program starts with come from the pack's scene record, which is why the record names the pack. `--vita-gxp DIR` names another directory with the same three kinds of file.
+
+**All four packages are byte-identical across two builds of a commit on one computer.** The tool writes the `.zip`, the `.ipa` and the `.vpk` itself: entries in the order of their names (in the `.vpk`, `sce_sys/param.sfo` and `eboot.bin` first, as `vita-pack-vpk` has them), every date 1980-01-01, modes 0644 and 0755, deflate at level 6. A development build of the Vita program carries a random build id. For a release the tool names it (`POCKET_RELEASE_BUILD`, which `tools/vita.ts` reads): 32 hex digits from the commit, the `vita60` pack's hash and the hash of the programs' list; `release.json` records it.
+
+**Packages go to Pocket Studio and to no page on GitHub.** `--upload` runs `pocket-studio package <file> --target <id> --version <version>` for each package from the repository's root, where `pocket-studio register --title "Pocket Maneuver"` wrote `.pocket-studio.json` (ignored by Git). It refuses a checkout with uncommitted changes. It does not register the game, publish it or change its address; when the link file is missing it prints the commands that write it. `--no-build --upload` sends the packages `release.json` lists, after checking their hashes.
+
+Starting a package without a development link: `bun tools/psp.ts emu --standalone` and `bun tools/n3ds.ts emu` run the built PSP folder and `.3dsx` in PPSSPPHeadless and Azahar, `bun tools/n3ds.ts install --no-build` sends the `.3dsx` to a console over the wire, `bun tools/ipod.ts deploy --ipa dist/release/pocket-maneuver-<version>-ipod.ipa` installs the `.ipa` as it is and reads every installed file back against the archive, and `bun tools/maneuver.ts push-vpk dist/release/pocket-maneuver-<version>.vpk` copies the `.vpk` to `ux0:data/pocket-maneuver/` through the running development build, for VitaShell to install.
 
 ## Layout
 
@@ -280,11 +333,13 @@ Toolchains: VitaSDK and `cargo-vita`; rust-psp's `cargo psp` (PocketJS's pinned 
 | `crates/maneuver-interface` | the interface's protocol, the game's flow (`Session`), the in-process channel for a PocketJS guest |
 | `ui/` | the interface: `pocket.json` (presentations), `app/` (protocol, state, shared parts, one presentation per device shape), `test/` (mock renderer, previews, flow test) |
 | `vita/` | Vita app and its Cg programs; LiveArea art under `vita/assets` |
-| `psp/` | PSP program: GE renderer, cell reader, exact-size memory, the interface's guest, sound |
+| `psp/` | PSP program: GE renderer, cell reader, exact-size memory, the interface's guest, sound; the XMB background under `psp/assets` |
 | `n3ds/` | 3DS program: C host and renderer, PICA shaders, the Rust core |
 | `ipod/` | iPod touch program: C shell and OpenGL ES 2 renderer; `core/` builds the 3DS core's source for the device |
+| `wgpu/` | the browser's program: the wgpu renderer (the PS Vita's passes in WGSL), the shell around the simulation, the page, and the program that writes frames to files |
+| `listing/` | the words of the game's listing on Pocket Studio, and how each of its pictures is recorded |
 | `profiles/` | compile profiles |
-| `tools/` | `maneuver.ts`, `vita.ts`, `psp.ts`, `n3ds.ts`, `ipod.ts`, `ui.ts`, `bench.ts`, `shot.ts` |
+| `tools/` | `maneuver.ts`, `vita.ts`, `psp.ts`, `n3ds.ts`, `ipod.ts`, `ui.ts`, `wgpu.ts`, `listing.ts`, `bench.ts`, `shot.ts`, `release.ts` |
 
 ## Not done
 
@@ -294,7 +349,8 @@ Toolchains: VitaSDK and `cargo-vita`; rust-psp's `cargo psp` (PocketJS's pinned 
 - The 3DS's CSND sound path and the PSP's sound have not been heard by a person; the Vita's sound has been checked for level, not by ear.
 - The numbers come from the autopilot. Wire pull, gas economy, reach and camera rates are set from simulated runs and have not been tuned by hand on a console.
 - No stereoscopic 3D on the 3DS: a second eye doubles the 8 to 10 ms of GPU time per frame.
-- The reference lights with a shadow map; the devices show the bake. The web app does not draw a cooked pack yet, so comparing the two is by eye.
+- The reference lights with a shadow map; the devices show the bake. `wgpu/` draws the PS Vita's cooked pack on the build machine, but no tool compares its frame with a capture from the console yet.
+- The browser tab reads the whole pack (30.7 MB) before its first frame of the world: 17.7 s on a line of 16 Mbit/s. It has been run in Chrome on one Mac; no other browser, no phone and no other GPU has drawn it, and nobody has judged its sound by ear.
 - The town has no townsfolk, carts or birds.
 
 ## License

@@ -9,7 +9,8 @@
  *
  *   bun tools/ipod.ts cook                    the world for profiles/ipod60.json → .pocket-build/world/walled-town.ipod60.pack
  *   bun tools/ipod.ts build | package         the app bundle (and its .ipa) → .pocket-build/ipod/
- *   bun tools/ipod.ts deploy                  build, then install through MobileInstallation
+ *   bun tools/ipod.ts deploy [--ipa FILE]     build, then install through MobileInstallation; --ipa installs that
+ *                                             package as it is (a release's), checked against its own files
  *   bun tools/ipod.ts native [--pack]         build, then replace the installed executable and interface (and the pack)
  *   bun tools/ipod.ts launch                  start it and wait for its first status
  *   bun tools/ipod.ts status
@@ -28,6 +29,7 @@ import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { IPOD_INSTALLER, parseInstalledIPodApp, shellQuote, userDeploymentScript } from "../vendor/pocketjs/tools/ipodtouch4-installation";
 import { IPODTOUCH4_TOOLCHAIN, inspectIPodTouch4Toolchain, ipodtouch4CacheRoot, ipodtouch4CsuPath, ipodtouch4QuickJsPath, ipodtouch4SysrootPath } from "../vendor/pocketjs/tools/ipodtouch4-toolchain";
+import { POCKET3D_ICON } from "../vendor/pocketjs/tools/pocket3d-icon.ts";
 import { compileInterface } from "./ui.ts";
 
 const root = resolve(import.meta.dir, "..");
@@ -134,8 +136,9 @@ async function build() {
     // `launch` opens the app through its own URL scheme.
     CFBundleURLTypes: `<array><dict><key>CFBundleURLSchemes</key><array>${text(bundleId)}</array></dict></array>`,
   })}</dict></plist>\n`);
-  for (const [name, size] of [["Icon.png", "57x57"], ["Icon@2x.png", "114x114"]])
-    run(["magick", join(root, "vita/assets/sce_sys/icon0.png"), "-resize", size, "-define", "png:exclude-chunk=date,time", join(bundle, name)]);
+  // SpringBoard's icon is the Pocket3D icon from PocketJS, at both sizes, as the files are.
+  cpSync(POCKET3D_ICON.ios, join(bundle, "Icon.png"));
+  cpSync(POCKET3D_ICON.ios2x, join(bundle, "Icon@2x.png"));
   for (const file of ["maneuver.js", "maneuver.pak"]) cpSync(join(ui.directory, file), join(bundle, file));
   cpSync(pack, join(bundle, "world.pack"));
   rmSync(join(out, "PocketManeuver.ipa"), { force: true });
@@ -250,9 +253,22 @@ async function launch(d: Device) {
 if (command === "cook") cook();
 else if (command === "build" || command === "package") await build();
 else if (command === "deploy") {
-  await build();
+  // `--ipa FILE` installs a package that is already built: the files the device is read back against are the
+  // archive's own, unpacked beside the build.
+  const given = option("--ipa");
+  if (!given) await build();
+  const ipa = given ? resolve(given) : join(out, "PocketManeuver.ipa");
+  const bundle = given ? join(out, "given/Payload", bundleName) : join(out, "Payload", bundleName);
+  if (given) {
+    rmSync(join(out, "given"), { recursive: true, force: true });
+    mkdirSync(join(out, "given"), { recursive: true });
+    run(["unzip", "-q", ipa, "-d", join(out, "given")]);
+    if (!existsSync(join(bundle, executableName))) throw new Error(`${ipa} holds no Payload/${bundleName}/${executableName}`);
+    // The installer goes with the device, not with the package: PocketJS's source, built here.
+    if (!existsSync(join(out, "installer"))) throw new Error("no installer built yet: run `bun tools/ipod.ts build` once");
+  }
   await device((d) => {
-    const remote = `/private/var/tmp/maneuver-${randomBytes(8).toString("hex")}`, ipa = join(out, "PocketManeuver.ipa");
+    const remote = `/private/var/tmp/maneuver-${randomBytes(8).toString("hex")}`;
     d.ssh(`mkdir -p ${remote} /var/root/Library/PocketJS`);
     d.push(join(out, "installer"), `${remote}/installer`);
     d.push(ipa, `${remote}/app.ipa`);
@@ -306,4 +322,4 @@ else if (command === "bench") {
     console.log(join(directory, "device.json"));
     console.log(JSON.stringify(summary, null, 1));
   });
-} else throw new Error("usage: cook | build | package | deploy | native [--pack] | launch | status | ctl WORDS | capture [--out PNG] | title [--out PNG] | reset | bench [--seconds N] [--ctl WORDS]");
+} else throw new Error("usage: cook | build | package | deploy [--ipa FILE] | native [--pack] | launch | status | ctl WORDS | capture [--out PNG] | title [--out PNG] | reset | bench [--seconds N] [--ctl WORDS]");

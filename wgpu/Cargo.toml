@@ -1,0 +1,55 @@
+# Pocket Maneuver drawn with wgpu: in a browser tab over WebGPU (wasm32), and
+# on the machine that builds it (Metal), where frames go to files.
+#
+# The game is crates/maneuver-sim and the flow of crates/maneuver-interface,
+# as every device links them. The pack is the PS Vita's (profiles/vita60.json)
+# and the passes are the PS Vita's (vita/src), in WGSL. Everything that is not
+# this game's is PocketJS's browser kernel
+# (vendor/pocketjs/devices/web/pocket-web-wgpu): the GPU device and its
+# screens, the interface's overlay pass, ranges of a pack.
+#
+#   bun tools/wgpu.ts build | serve | dist | shot | film | check     (from the repository root)
+
+[package]
+name = "maneuver-wgpu"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pocket Maneuver's wgpu renderer: the PS Vita's pack and passes, in a browser tab and on the build machine"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "maneuver-shot"
+path = "src/bin/shot.rs"
+
+[dependencies]
+maneuver-sim = { path = "../crates/maneuver-sim" }
+maneuver-pack = { path = "../crates/maneuver-pack" }
+maneuver-interface = { path = "../crates/maneuver-interface" }
+pocket-web-wgpu = { path = "../vendor/pocketjs/devices/web/pocket-web-wgpu" }
+serde_json = "1"
+libm = "0.2"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The command line tool that writes the JavaScript side must be this version (tools/wgpu.ts checks).
+wasm-bindgen = "=0.2.126"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "console"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+png = "0.17"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 1
+
+[workspace]
+resolver = "2"

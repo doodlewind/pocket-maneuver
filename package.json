@@ -10,7 +10,9 @@
     "dev": "bun tools/maneuver.ts sim && bun run --cwd web dev",
     "ui": "bun tools/ui.ts",
     "typecheck": "bunx tsc --noEmit -p web && bunx tsc --noEmit -p ui",
-    "test": "cargo test --workspace && bun tools/ui.ts test"
+    "test": "cargo test --workspace && cargo test --manifest-path wgpu/Cargo.toml && bun tools/ui.ts test && bun test ./tools",
+    "wgpu": "bun tools/wgpu.ts",
+    "listing": "bun tools/listing.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

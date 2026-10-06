@@ -17,6 +17,7 @@
 // `{"mode": "play", "auto": true}` is play flown by the autopilot; the
 // renderer's switches (`hud stats sound world actors cullCw profile`,
 // `lodNear lodMid repeat`, `post`, `view`, `reset`) are as before.
+//   bun tools/maneuver.ts programs                   # the console compiles every program from this checkout: the set a package carries
 //   bun tools/maneuver.ts push-vpk [file.vpk]        # → ux0:data/pocket-maneuver/ via the development build
 //   bun tools/maneuver.ts hold [--take|--release]    # keep the console for this repository across commands
 //
@@ -29,8 +30,9 @@
 
 import { $ } from "bun";
 import { createHash, randomBytes } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { POCKET3D_ICON } from "../vendor/pocketjs/tools/pocket3d-icon.ts";
 import { packageVitaVpk } from "../vendor/pocketjs/tools/vita-package.ts";
 import { prepareVitaUsb } from "../vendor/pocketjs/tools/vita-usb.ts";
 import { compileInterface } from "./ui.ts";
@@ -66,11 +68,23 @@ export function context(argv: string[]) {
   return { title, share, appShare: resolve(share, "maneuver"), output: `pocket-maneuver-${title}`, release: !argv.includes("--debug"), standalone };
 }
 
+/**
+ * The id a build carries. A development build takes a fresh one, which the dev host tells two builds apart by.
+ * `tools/release.ts` names a release build's instead (POCKET_RELEASE_BUILD: 32 hex digits from the commit and
+ * the hashes of what the package is built from), so two builds of one commit are the same bytes.
+ */
+function buildId(): string {
+  const named = process.env.POCKET_RELEASE_BUILD;
+  if (named === undefined) return randomBytes(16).toString("hex");
+  if (!/^[0-9a-f]{32}$/.test(named)) throw new Error("POCKET_RELEASE_BUILD is not 32 hex digits");
+  return named;
+}
+
 export async function build(argv: string[], assets?: string): Promise<string> {
   const c = context(argv);
   if (!existsSync(`${vitasdk}/bin/vita-pack-vpk`)) throw new Error(`VitaSDK not found at ${vitasdk}`);
   const usb = c.standalone ? undefined : await prepareVitaUsb();
-  const nativeBuild = randomBytes(16).toString("hex");
+  const nativeBuild = buildId();
   const env = {
     ...process.env,
     PATH: `${vitasdk}/bin:${home}/.cargo/bin:${process.env.PATH ?? ""}`,
@@ -97,7 +111,8 @@ export async function build(argv: string[], assets?: string): Promise<string> {
   // Unsafe-homebrew SELF: loading the USB driver and writing the inactive native slot need the standard homebrew permissions.
   await $`${vitasdk}/bin/vita-make-fself ${target}/${BIN}.velf ${eboot}`;
   await $`${vitasdk}/bin/vita-mksfoex -d ATTRIBUTE2=12 -s TITLE_ID=${c.title} ${"Pocket Maneuver"} ${sfo}`;
-  await packageVitaVpk({ tool: `${vitasdk}/bin/vita-pack-vpk`, sfo, eboot, output: vpk, usbDriver: usb?.driver, applicationAssets: assets ?? `${APP_DIR}/assets` });
+  // The bubble's icon is the Pocket3D icon from PocketJS; the asset tree holds the LiveArea pictures, which are the game's own.
+  await packageVitaVpk({ tool: `${vitasdk}/bin/vita-pack-vpk`, sfo, eboot, output: vpk, usbDriver: usb?.driver, applicationAssets: assets ?? `${APP_DIR}/assets`, icon: POCKET3D_ICON.vita });
 
   mkdirSync(OUT_DIR, { recursive: true });
   cpSync(vpk, `${OUT_DIR}/${c.output}.vpk`);
@@ -188,7 +203,9 @@ export async function sync(argv: string[]): Promise<void> {
  */
 export async function vpk(argv: string[]): Promise<void> {
   const c = context(argv);
-  const manifest = `${c.appShare}/gxp/manifest.txt`;
+  // `--gxp DIR` names the programs (tools/release.ts passes a checked set); without it, what the last development run left on the share.
+  const programDirectory = resolve(value(argv, "--gxp", `${c.appShare}/gxp`));
+  const manifest = `${programDirectory}/manifest.txt`;
   if (!existsSync(manifest)) throw new Error(`${manifest} missing: run the development build on the device first`);
   if (!existsSync(PACK)) throw new Error(`no pack at ${PACK}: run \`bun tools/maneuver.ts cook\` first`);
   const stage = resolve(ROOT, ".pocket-build/vpk");
@@ -197,7 +214,7 @@ export async function vpk(argv: string[]): Promise<void> {
   cpSync(`${APP_DIR}/assets`, stage, { recursive: true });
   const hashes = readFileSync(manifest, "utf8").split("\n").filter(Boolean);
   for (const h of hashes) {
-    const gxp = `${c.appShare}/gxp/${h}.gxp`;
+    const gxp = `${programDirectory}/${h}.gxp`;
     if (!existsSync(gxp)) throw new Error(`${gxp} missing: the device has not compiled this build's programs`);
     cpSync(gxp, `${stage}/gxp/${h}.gxp`);
   }
@@ -206,6 +223,134 @@ export async function vpk(argv: string[]): Promise<void> {
   for (const name of INTERFACE) cpSync(`${ui.directory}/${name}`, `${stage}/${name}`);
   console.log(`maneuver: staged ${hashes.length} programs, the pack and the interface in ${stage}`);
   await build([...argv.filter((a) => a !== "--standalone"), "--standalone"], stage);
+}
+
+/** Where `programs` leaves the console's programs, their list and `coverage.json`. No development run writes here. */
+export const PROGRAMS_DIR = resolve(ROOT, ".pocket-build/vita-programs");
+
+/** `vita/shaders` as one hash over each file's name and bytes, in the order of the names. */
+export function shaderSources(): string {
+  const hash = createHash("sha256");
+  for (const name of readdirSync(`${APP_DIR}/shaders`).sort()) hash.update(name).update(readFileSync(`${APP_DIR}/shaders/${name}`));
+  return hash.digest("hex");
+}
+
+/** How a set of programs was collected: what `programs` writes and `tools/release.ts` checks. */
+export interface Coverage {
+  schema: 1;
+  at: string;
+  /** The checkout the development build was built from. */
+  commit: string | null;
+  dirty: boolean;
+  /** The development build that compiled the programs, as the console reported it. */
+  nativeBuild: string;
+  /** The pack the console read: the programs' numeric defines come from its scene record. */
+  packSha256: string;
+  /** `shaderSources()` when the build was made. */
+  shaderSources: string;
+  /** What the console reported: how many programs the build asked for, and how many it compiled in this run. */
+  requested: number;
+  compiled: number;
+  /** The programs' names, each once, in the order the build asked for them. */
+  programs: string[];
+}
+
+/**
+ * Collects the programs a package carries. SceShaccCg runs on a console, so a package holds what a console
+ * compiled. The runtime asks for every program it has while it loads (`Gpu::program` in vita/src/main.rs and
+ * vita/src/post.rs, before `Gpu::finish`); no setting adds one later, and the multisampling choice changes how
+ * a program is patched, not its source. One start therefore asks for the whole set.
+ *
+ * This builds the development build from this checkout, starts it with `{"programs": "fresh"}` in `boot.json`
+ * (it then reads no program from the card or the package and compiles each one), waits until it runs, and
+ * copies the console's list and its `.gxp` files to `.pocket-build/vita-programs/` with `coverage.json`.
+ */
+export async function programs(argv: string[]): Promise<void> {
+  const c = context(argv);
+  if (c.standalone) throw new Error("the pass runs the development build: drop --standalone");
+  const git = (...args: string[]) => {
+    const done = Bun.spawnSync(["git", ...args], { cwd: ROOT, stdout: "pipe", stderr: "pipe" });
+    return done.exitCode === 0 ? done.stdout.toString().trim() : null;
+  };
+  const sha = (p: string) => createHash("sha256").update(readFileSync(p)).digest("hex");
+  await sync(argv);
+  const gxp = `${c.appShare}/gxp`;
+  // Only what this run compiles may be in the share's folder when it is read.
+  rmSync(gxp, { recursive: true, force: true });
+  mkdirSync(gxp, { recursive: true });
+  const boot = `${c.appShare}/boot.json`;
+  const before = existsSync(boot) ? readFileSync(boot) : null;
+  const sources = shaderSources();
+  let engine: any;
+  let nativeBuild: string;
+  try {
+    writeFileSync(boot, JSON.stringify({ title: false, programs: "fresh" }) + "\n");
+    nativeBuild = JSON.parse(readFileSync(await build(argv), "utf8")).nativeBuild as string;
+    if (shaderSources() !== sources) throw new Error("vita/shaders changed while the build ran");
+    await dev(argv, "native");
+    const end = Date.now() + 240_000;
+    for (;;) {
+      await Bun.sleep(1000);
+      let s: any;
+      try {
+        s = status(argv);
+      } catch {
+        s = null;
+      }
+      if (s?.nativeBuild === nativeBuild && s.engine?.stage === "error") throw new Error(`the build stopped while loading: ${s.engine.message ?? JSON.stringify(s.engine)}`);
+      if (s?.nativeBuild === nativeBuild && s.engine?.stage === "running") {
+        engine = s.engine;
+        break;
+      }
+      if (Date.now() > end) throw new Error(`the console did not report this build running within 240 s (it reports build ${s?.nativeBuild ?? "none"}, stage ${s?.engine?.stage ?? "none"})`);
+    }
+  } finally {
+    if (before) writeFileSync(boot, before);
+    else rmSync(boot, { force: true });
+  }
+  const ran = engine.programs ?? {};
+  if (ran.fresh !== true || ran.cached !== 0 || ran.compiled !== ran.requested || !(ran.requested > 0)) {
+    throw new Error(`the console did not compile every program in this run: ${JSON.stringify(ran)}`);
+  }
+  if (engine.pack?.sha256 !== sha(PACK)) throw new Error(`the console read a pack that is not ${PACK}: run \`bun tools/maneuver.ts cook --profile vita60\` and the pass again`);
+  const listed = readFileSync(`${gxp}/manifest.txt`, "utf8").split("\n").filter(Boolean);
+  if (listed.length !== ran.requested) throw new Error(`the console's list names ${listed.length} programs and the build asked for ${ran.requested}`);
+  const names = [...new Set(listed)];
+  rmSync(PROGRAMS_DIR, { recursive: true, force: true });
+  mkdirSync(PROGRAMS_DIR, { recursive: true });
+  for (const name of names) {
+    if (!/^[0-9a-f]{16}$/.test(name)) throw new Error(`"${name}" in the console's list is not a program's name`);
+    const from = `${gxp}/${name}.gxp`;
+    if (!existsSync(from) || readFileSync(from).length <= 16) throw new Error(`${from} is missing: the console listed a program it did not send`);
+    cpSync(from, `${PROGRAMS_DIR}/${name}.gxp`);
+  }
+  writeFileSync(`${PROGRAMS_DIR}/manifest.txt`, names.join("\n"));
+  const coverage: Coverage = {
+    schema: 1, at: new Date().toISOString(), commit: git("rev-parse", "HEAD"), dirty: git("status", "--porcelain") !== "",
+    nativeBuild, packSha256: engine.pack.sha256, shaderSources: sources, requested: ran.requested, compiled: ran.compiled, programs: names,
+  };
+  writeFileSync(`${PROGRAMS_DIR}/coverage.json`, JSON.stringify(coverage, null, 2) + "\n");
+  console.log(`maneuver: ${names.length} programs from ${ran.requested} requests, compiled by build ${nativeBuild} → ${PROGRAMS_DIR}`);
+}
+
+/**
+ * Why a directory is not the programs of this checkout's package, or null when it is: `coverage.json` must be
+ * there, name this checkout's `vita/shaders` and the pack being packaged, and list the programs the directory
+ * holds, each compiled in the pass.
+ */
+export function coverageFault(directory: string, packSha256: string): string | null {
+  const record = `${directory}/coverage.json`;
+  const again = "run `bun tools/maneuver.ts programs` with the console on the development host";
+  if (!existsSync(record)) return `${record} is missing: the programs were not collected by a pass (${again})`;
+  const c = JSON.parse(readFileSync(record, "utf8")) as Coverage;
+  if (c.schema !== 1) return `${record} is not a coverage record this tool reads`;
+  if (c.shaderSources !== shaderSources()) return `the programs in ${directory} were compiled from other shader sources (${c.shaderSources.slice(0, 12)}) than this checkout's vita/shaders (${shaderSources().slice(0, 12)}): ${again}`;
+  if (c.packSha256 !== packSha256) return `the programs in ${directory} were compiled for another pack (${c.packSha256.slice(0, 12)}) than the one being packaged (${packSha256.slice(0, 12)}): ${again}`;
+  if (c.compiled !== c.requested || !(c.requested > 0)) return `${record}: the console compiled ${c.compiled} of ${c.requested} programs in the pass`;
+  const listed = existsSync(`${directory}/manifest.txt`) ? readFileSync(`${directory}/manifest.txt`, "utf8").split("\n").filter(Boolean) : [];
+  if (listed.join("\n") !== c.programs.join("\n")) return `${directory}/manifest.txt is not the list ${record} records`;
+  for (const name of c.programs) if (!existsSync(`${directory}/${name}.gxp`)) return `${directory}/${name}.gxp is missing`;
+  return null;
 }
 
 /** Sends a packaged VPK to `ux0:data/pocket-maneuver/` through the running development build, for VitaShell to install. */

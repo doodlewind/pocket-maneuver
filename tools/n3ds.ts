@@ -95,11 +95,11 @@ async function build() {
   // Compile a snapshot on the container's own filesystem: the shared mount can show a stale size for a file
   // that was just rewritten, on either side. The snapshot's name is new each build. It holds everything this
   // build wrote: the sources, both Rust libraries and the interface. The pack is copied through the mount
-  // and checked against its hash; PocketJS's sources and QuickJS are read through the mount as they are.
+  // and checked against its hash; PocketJS's sources, its Pocket3D icon and QuickJS are read through the mount as they are.
   const snapshot = `source-${buildId}-${Date.now()}.tar`;
   for (const f of readdirSync(DIR).filter((f) => f.startsWith("source-"))) rmSync(join(DIR, f));
   const uiCoreInTar = ".pocket-build/3ds/ui-core/armv6k-nintendo-3ds/release/libpocketjs_3ds_core.a";
-  await $`tar --no-xattrs -cf ${join(DIR, snapshot)} n3ds/src n3ds/Makefile n3ds/icon.png .pocket-build/3ds/build/config.h ${core} ${uiCoreInTar} .pocket-build/ui/3ds/maneuver.js .pocket-build/ui/3ds/maneuver.pak`.cwd(ROOT);
+  await $`tar --no-xattrs -cf ${join(DIR, snapshot)} n3ds/src n3ds/Makefile .pocket-build/3ds/build/config.h ${core} ${uiCoreInTar} .pocket-build/ui/3ds/maneuver.js .pocket-build/ui/3ds/maneuver.pak`.cwd(ROOT);
   await runContainer(
     `mkdir -p /tmp/source /tmp/build /tmp/romfs && tar -xf /maneuver/.pocket-build/3ds/${snapshot} -C /tmp/source
 cp /tmp/source/.pocket-build/3ds/build/config.h /tmp/build/config.h
