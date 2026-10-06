@@ -72,6 +72,8 @@ pub struct Gpu {
     /// Hashes of every program in use, for packaging.
     pub manifest: Vec<String>,
     live: bool,
+    /// A pass for a package: every program is compiled now, whatever the card and the package hold.
+    pub fresh: bool,
 }
 
 fn fnv64(parts: &[&[u8]]) -> u64 {
@@ -93,9 +95,9 @@ pub struct Layout<'a> {
 }
 
 impl Gpu {
-    pub unsafe fn new(live: bool) -> Result<Gpu, String> {
+    pub unsafe fn new(live: bool, fresh: bool) -> Result<Gpu, String> {
         let _ = std::fs::create_dir_all(paths::GXP_CACHE);
-        Ok(Gpu { patcher: Patcher::new(512 * 1024, 256 * 1024, 512 * 1024)?, compiler: None, compiled: 0, cached: 0, manifest: Vec::new(), live })
+        Ok(Gpu { patcher: Patcher::new(512 * 1024, 256 * 1024, 512 * 1024)?, compiler: None, compiled: 0, cached: 0, manifest: Vec::new(), live, fresh })
     }
 
     /// The GXP of a source: cached on the memory card, shipped in the package, or compiled now.
@@ -106,7 +108,10 @@ impl Gpu {
         };
         let hash = format!("{:016x}", fnv64(&[source.as_bytes(), tag]));
         self.manifest.push(hash.clone());
-        for dir in [paths::GXP_CACHE, paths::GXP_PACKAGED] {
+        // A pass for a package reads neither: the computer gets a copy of what is compiled, and a program taken
+        // from the card would leave none.
+        let kept: &[&str] = if self.fresh { &[] } else { &[paths::GXP_CACHE, paths::GXP_PACKAGED] };
+        for dir in kept {
             if let Ok(bytes) = std::fs::read(format!("{dir}/{hash}.gxp")) {
                 if bytes.len() > 16 {
                     self.cached += 1;

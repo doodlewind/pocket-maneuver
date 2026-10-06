@@ -22,5 +22,5 @@ node_modules/
 /ipod/core/target/
 /wgpu/target/
 
-# The project this checkout is registered as in Pocket Studio (`pocket-studio register`): no token is in it
+# The Pocket Studio project this checkout sends its packages, its site and its listing to (pocket-studio register)
 .pocket-studio.json
