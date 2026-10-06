@@ -1,0 +1,56 @@
+{
+  "tagline": "Two wires, a tank of gas, a walled town.",
+  "description": [
+    "Pocket Maneuver is a traversal game. You fire a wire from each hip into a wall or a roof, let it pull you, let go and fire the next. Gas reels a wire in faster, and thrusts when no wire holds.",
+    "The town is about 5 400 houses inside a 50 m wall, with a town hall, a cathedral, a canal ring and eight bridges. Thirty-two giants, 10 to 16 m tall, stand in its streets and among the trees outside the wall. A giant falls when you cut the nape of its neck at speed. A run ends when every giant is cut, and its time stands against your best.",
+    "It runs at 60 frames a second on a PS Vita, a PSP, a Nintendo 3DS and an iPod touch 4, each with a renderer written for its own GPU. The browser version draws the PS Vita build's world with WebGPU."
+  ],
+  "media": [
+    {
+      "kind": "video", "file": "streets.mp4", "poster": "streets.jpg",
+      "caption": "From the wall into the streets on two wires, to the cut that brings a giant down.",
+      "take": { "words": "mode=play auto=1", "from": 530, "frames": 730, "poster": 330 }
+    },
+    {
+      "kind": "video", "file": "giant.mp4", "poster": "giant.jpg",
+      "caption": "A giant 11 m tall in a street, cut at the nape from behind.",
+      "take": { "words": "mode=play auto=1 view=92,9,-1,70,8,0,50", "from": 940, "frames": 450, "poster": 228 }
+    },
+    {
+      "kind": "video", "file": "flight.mp4", "poster": "flight.jpg",
+      "caption": "Gas thrust from the wall across the town, toward the cathedral.",
+      "take": { "words": "mode=play auto=1 chase=-7,4,8,58", "from": 80, "frames": 450, "poster": 220 }
+    },
+    {
+      "kind": "video", "file": "wall.mp4", "poster": "wall.jpg",
+      "caption": "Gas refilled at the gate, up a watch tower by wire, then along the top of the wall.",
+      "take": { "words": "mode=play auto=1", "from": 2930, "frames": 600, "poster": 190 }
+    },
+    {
+      "kind": "image", "file": "gauges.jpg",
+      "caption": "Play as the PS Vita's screen shows it: the gas, the speed, the giants cut and the clock.",
+      "take": { "page": "vita", "steps": [["ui=start auto=1", 700]] }
+    },
+    {
+      "kind": "image", "file": "nape.jpg",
+      "caption": "Both wires in a giant's nape, a moment before the cut.",
+      "take": { "words": "mode=play auto=1", "frame": 1185, "size": [1920, 1088] }
+    },
+    {
+      "kind": "image", "file": "town.jpg",
+      "caption": "The town from above its wall: eight rings of blocks, the canal and the cathedral's two spires.",
+      "take": { "words": "mode=play auto=1 chase=-7,4,8,58", "frame": 300, "size": [1920, 1088] }
+    },
+    {
+      "kind": "image", "file": "square.jpg",
+      "caption": "A swing across the central square on one wire, with gas.",
+      "take": { "words": "mode=play auto=1 chase=-4,2,5,50", "frame": 860, "size": [1920, 1088] }
+    },
+    {
+      "kind": "image", "file": "map.jpg",
+      "caption": "A pause: the town from above, with a mark for each giant that stands.",
+      "take": { "page": "vita", "steps": [["ui=start auto=1", 1300], ["ui=pause", 60]] }
+    }
+  ],
+  "card": { "file": "card.jpg", "take": { "words": "mode=play auto=1 chase=-5.5,3,6.5,58", "frame": 330, "size": [1200, 630] } }
+}
