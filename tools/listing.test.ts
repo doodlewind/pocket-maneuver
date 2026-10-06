@@ -20,9 +20,19 @@ test("the words fit what Pocket Studio takes", () => {
   for (const entry of listing.media) expect(entry.caption.length, entry.caption).toBeLessThanOrEqual(140);
 });
 
+test("the Japanese words fit the same limits, with a caption for every picture", () => {
+  const ja = listing.translations.ja;
+  expect(ja.tagline.length).toBeLessThanOrEqual(120);
+  expect(ja.description.length).toBeGreaterThanOrEqual(1);
+  expect(ja.description.length).toBeLessThanOrEqual(6);
+  for (const paragraph of ja.description) expect(paragraph.length, paragraph).toBeLessThanOrEqual(600);
+  expect(Object.keys(ja.captions).sort()).toEqual(listing.media.map((entry: { file: string }) => entry.file).sort());
+  for (const caption of Object.values(ja.captions) as string[]) expect(caption.length, caption).toBeLessThanOrEqual(140);
+});
+
 test("the title screen and the listing say the same line", () => {
-  // (the interface's title, the player's bar and the listing: one sentence)
-  expect(readFileSync(resolve(ROOT, "wgpu/page/main.js"), "utf8")).toContain(`tagline: ${JSON.stringify(listing.tagline)}`);
+  // (the interface's title, the player's bar and the listing: one sentence, in each language the listing has)
+  expect(readFileSync(resolve(ROOT, "wgpu/page/main.js"), "utf8")).toContain(`tagline: { en: ${JSON.stringify(listing.tagline)}, ja: ${JSON.stringify(listing.translations.ja.tagline)} }`);
 });
 
 test("the first picture is a clip, and every picture has a take", () => {
