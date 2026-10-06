@@ -58,6 +58,7 @@ switch (cmd) {
   case "hold":
   case "vpk":
   case "push-vpk":
+  case "programs":
   case "bench": {
     const vita = await import("./vita.ts");
     if (cmd === "build") await vita.build(rest);
@@ -77,6 +78,7 @@ switch (cmd) {
     else if (cmd === "hold") await vita.hold(rest);
     else if (cmd === "vpk") await vita.vpk(rest);
     else if (cmd === "push-vpk") await vita.pushVpk(rest);
+    else if (cmd === "programs") await vita.programs(rest);
     else {
       const { bench } = await import("./bench.ts");
       await bench(rest);
@@ -89,6 +91,6 @@ switch (cmd) {
     break;
   }
   default:
-    console.log("usage: bun tools/maneuver.ts <sim|export|cook|shot|build|sync|native|serve|status|capture|ctl|bench>");
+    console.log("usage: bun tools/maneuver.ts <sim|export|cook|shot|build|sync|native|serve|status|capture|ctl|bench|vpk|push-vpk|programs|hold>");
     process.exit(cmd ? 1 : 0);
 }

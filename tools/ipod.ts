@@ -9,7 +9,8 @@
  *
  *   bun tools/ipod.ts cook                    the world for profiles/ipod60.json → .pocket-build/world/walled-town.ipod60.pack
  *   bun tools/ipod.ts build | package         the app bundle (and its .ipa) → .pocket-build/ipod/
- *   bun tools/ipod.ts deploy                  build, then install through MobileInstallation
+ *   bun tools/ipod.ts deploy [--ipa FILE]     build, then install through MobileInstallation; --ipa installs that
+ *                                             package as it is (a release's), checked against its own files
  *   bun tools/ipod.ts native [--pack]         build, then replace the installed executable and interface (and the pack)
  *   bun tools/ipod.ts launch                  start it and wait for its first status
  *   bun tools/ipod.ts status
@@ -239,9 +240,22 @@ async function launch(d: Device) {
 if (command === "cook") cook();
 else if (command === "build" || command === "package") await build();
 else if (command === "deploy") {
-  await build();
+  // `--ipa FILE` installs a package that is already built: the files the device is read back against are the
+  // archive's own, unpacked beside the build.
+  const given = option("--ipa");
+  if (!given) await build();
+  const ipa = given ? resolve(given) : join(out, "PocketManeuver.ipa");
+  const bundle = given ? join(out, "given/Payload", bundleName) : join(out, "Payload", bundleName);
+  if (given) {
+    rmSync(join(out, "given"), { recursive: true, force: true });
+    mkdirSync(join(out, "given"), { recursive: true });
+    run(["unzip", "-q", ipa, "-d", join(out, "given")]);
+    if (!existsSync(join(bundle, executableName))) throw new Error(`${ipa} holds no Payload/${bundleName}/${executableName}`);
+    // The installer goes with the device, not with the package: PocketJS's source, built here.
+    if (!existsSync(join(out, "installer"))) throw new Error("no installer built yet: run `bun tools/ipod.ts build` once");
+  }
   await device((d) => {
-    const remote = `/private/var/tmp/maneuver-${randomBytes(8).toString("hex")}`, ipa = join(out, "PocketManeuver.ipa");
+    const remote = `/private/var/tmp/maneuver-${randomBytes(8).toString("hex")}`;
     d.ssh(`mkdir -p ${remote} /var/root/Library/PocketJS`);
     d.push(join(out, "installer"), `${remote}/installer`);
     d.push(ipa, `${remote}/app.ipa`);
@@ -288,4 +302,4 @@ else if (command === "bench") {
     console.log(join(directory, "device.json"));
     console.log(JSON.stringify(summary, null, 1));
   });
-} else throw new Error("usage: cook | build | package | deploy | native [--pack] | launch | status | ctl WORDS | capture [--out PNG] | bench [--seconds N] [--ctl WORDS]");
+} else throw new Error("usage: cook | build | package | deploy [--ipa FILE] | native [--pack] | launch | status | ctl WORDS | capture [--out PNG] | bench [--seconds N] [--ctl WORDS]");
