@@ -31,13 +31,21 @@ use maneuver_pack::{self as pack, tex_format, ClipGroup, HandMesh, ModelHeader, 
 use maneuver_sim::math::*;
 use maneuver_sim::pose::{BONES, CLOAK_N};
 use psp::sys::*;
+use pocket_psp_ge::DisplayList;
 use psp::Align16;
 
 use crate::interface::Ui;
 use crate::{mem, store};
 
 const LIST_WORDS: usize = 196_608;
-static mut LIST: Align16<[u32; LIST_WORDS]> = Align16([0; LIST_WORDS]);
+// sceGuStart writes the list through the uncached mirror, so the list has data-cache lines of its own. In a line
+// shared with a static the CPU writes through the cache, the line's write-back puts the frame before's first
+// commands, the frame buffer to draw into among them, over this frame's (pocket_psp_ge::list).
+static mut LIST: DisplayList<LIST_WORDS> = DisplayList::new();
+/// The list every frame is written into.
+fn list() -> *mut c_void {
+    DisplayList::as_mut_ptr(ptr::addr_of_mut!(LIST))
+}
 
 /// One frame buffer: 512 × 272 texels of 16 bits. The colour and depth buffers are all this size.
 pub const FB_BYTES: usize = 512 * 272 * 2;
@@ -142,7 +150,7 @@ unsafe fn flush<T>(p: *const T, bytes: usize) {
 /// Starts the GE: two 16-bit frame buffers, the depth buffer, and the state every frame assumes.
 pub unsafe fn init() {
     sceGuInit();
-    sceGuStart(GuContextType::Direct, ptr::addr_of_mut!(LIST.0) as *mut c_void);
+    sceGuStart(GuContextType::Direct, list());
     // 16-bit colour with ordered dither: half the memory traffic of 32-bit per pixel written.
     sceGuDrawBuffer(DisplayPixelFormat::Psm5650, ptr::null_mut(), 512);
     sceGuDispBuffer(480, 272, FB_BYTES as *mut c_void, 512);
@@ -193,7 +201,7 @@ const BACKDROP: u32 = 0xff14_100c;
 
 /// A frame of the interface alone, shown at once: the pack is loading, or it could not be.
 pub unsafe fn interlude(ui: &Ui) {
-    sceGuStart(GuContextType::Direct, ptr::addr_of_mut!(LIST.0) as *mut c_void);
+    sceGuStart(GuContextType::Direct, list());
     sceGuClearColor(BACKDROP);
     sceGuClear(ClearBuffer::COLOR_BUFFER_BIT);
     ui.draw();
@@ -611,7 +619,7 @@ impl Gfx {
         }
 
         lap(0);
-        sceGuStart(GuContextType::Direct, ptr::addr_of_mut!(LIST.0) as *mut c_void);
+        sceGuStart(GuContextType::Direct, list());
         sceGuDepthMask(0);
         sceGuClearColor(abgr(game.scene.fog_srgb()));
         sceGuClearDepth(0);
