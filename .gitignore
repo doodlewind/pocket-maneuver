@@ -20,6 +20,7 @@ node_modules/
 /ui/.pocket/
 /ui/app/images.json
 /ipod/core/target/
+/wgpu/target/
 
-# The Pocket Studio project this checkout uploads its packages to (pocket-studio register)
+# The Pocket Studio project this checkout sends its packages, its site and its listing to (pocket-studio register)
 .pocket-studio.json

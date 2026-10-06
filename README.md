@@ -1,6 +1,6 @@
 # Pocket Maneuver
 
-A traversal game for the PS Vita, the PSP, the Nintendo 3DS and the iPod touch 4: two wire hooks, a tank of compressed gas and a walled town of about 5 400 houses, at **60 frames per second**.
+A traversal game for the PS Vita, the PSP, the Nintendo 3DS and the iPod touch 4: two wire hooks, a tank of compressed gas and a walled town of about 5 400 houses, at **60 frames per second**. A browser tab plays it too: the same simulation compiled to wasm32, with a wgpu renderer that draws the PS Vita's pack.
 
 The player fires a wire from each hip into a wall or a roof, is pulled along it, lets go and fires the next. Gas reels a wire in faster, or thrusts when no wire holds. Thirty-two giants, 10 to 16 m tall, stand in the streets and among the trees outside the wall; a giant falls when the player cuts the nape of its neck at speed.
 
@@ -10,6 +10,7 @@ The player fires a wire from each hip into a wall or a roof, is pulled along it,
 | Nintendo 3DS | 400 × 240, town map on the lower screen | PICA200 through citro3d | Old 3DS, 60 s: 3 652 frames, **8 late** (0.2 %), up to 52 600 triangles |
 | PSP | 480 × 272, 16-bit with dither | GE, fixed function | PSP 2000, 60 s: 3 510 frames, **93 late** (2.6 %), up to 22 300 triangles |
 | iPod touch 4 | 480 × 320, played by touch | OpenGL ES 2 on the SGX535 | 60 s: 3 570 frames, **31 late** (0.9 %), up to 36 500 triangles |
+| Browser tab | the screen of the handheld the page shows, 4× MSAA, the PS Vita's bloom, light shafts and graded composite | wgpu over WebGPU, the PS Vita's pack and passes | Chrome 154 on an M3 Max: 60 frames a second, 0.25 to 0.74 ms a frame, up to 251 900 triangles |
 
 The repository holds the whole path from authoring to hardware:
 
@@ -17,6 +18,7 @@ The repository holds the whole path from authoring to hardware:
 - **`crates/maneuver-sim`** is the game: collision, wire physics, camera, procedural animation, sound and the autopilot. The reference runs it as wasm; every device links it natively. There is one implementation of every rule.
 - **`crates/maneuver-cook`** compiles the world for a device profile: it bakes lighting into vertex colours, merges geometry into cells with levels of detail, encodes the atlas and the models in the device's formats and writes one pack with a compile receipt.
 - **`vita/`**, **`psp/`**, **`n3ds/`** and **`ipod/`** draw their pack and run the simulation at one tick per display refresh. **`crates/maneuver-handheld`** is the half of the PSP, 3DS and iPod runtimes that does not touch a GPU.
+- **`wgpu/`** draws the PS Vita's pack with wgpu: in a browser tab over WebGPU, inside PocketJS's Pocket3D player with the handhelds' shells, and on the build machine, where frames go to files. `wgpu/README.md` has the frame, what differs from the PS Vita's picture and the measurements.
 - **`ui/`** is the interface: one PocketJS app, compiled for each device and drawn over the scene by every runtime. **`crates/maneuver-interface`** is the renderer's side of it and the game's flow (title, play, pause, the finished run).
 
 PocketJS (pinned in `vendor/pocketjs`) supplies the device toolchains, the Vita dev host and GXM kernel, the 3DS dev wire and VPK packaging.
@@ -206,6 +208,17 @@ Measured on an iPod touch 4 (A4, iOS 6.1.6), play flown by the autopilot (`bun t
 
 CPU time per frame: simulation 2.2 ms, the guest's turn 0.6 ms, the interface's redraw 2.5 ms (about 6 ms on a frame that redraws), the scene's commands 2.4 ms.
 
+## In a browser tab
+
+`wgpu/` is the game for a tab: **`maneuver-sim` and `maneuver-interface` compiled to wasm32, a wgpu renderer over WebGPU that reads the PS Vita's pack and draws the PS Vita's passes, and PocketJS's Pocket3D player around it** (`vendor/pocketjs/devices/web/pocket-web-wgpu`). The reference in `web/` is where the world is generated; it is not what a visitor is given.
+
+- **The page shows the game as one of four handhelds** (PS Vita, PSP, Nintendo 3DS, iPod touch): that device's shell, its screen's size, its own bundle of `ui/` in a realm of the page, and its buttons from the keyboard, the shell's keys under a pointer, or a finger. The pack and the passes are the PS Vita's whatever the device; the page says beside the device's name how that device's own build differs.
+- **The Pocket3D title card plays first**, and the pack (30.7 MB) is read while it plays; the interface's loading screen counts what has arrived.
+- **The same renderer writes frames to files** on the build machine (`wgpu/src/bin/shot.rs`), a sixtieth of a second a frame: `bun tools/listing.ts` records the clips and stills of the game's listing on Pocket Studio that way (`listing/listing.json` holds the words and the takes; the pictures go to the ignored `dist/listing/`).
+- `bun tools/wgpu.ts dist` writes the directory a static host serves: 60 files, 38.1 MB, the pack in pieces of 2 MiB named by their hashes. `pocket-studio site .pocket-build/wgpu/dist` deploys it to the game's address on Pocket Studio, from the checkout `pocket-studio register` linked; `bun tools/listing.ts --upload` sends the listing the same way.
+
+`wgpu/README.md` names what differs from the PS Vita's picture (texels in place of BC1 blocks, packed vertex numbers scaled in the program, one composite program, the gas standing still under a pause).
+
 ## Controls
 
 | | Vita | PSP | 3DS | Keyboard |
@@ -253,6 +266,11 @@ bun tools/n3ds.ts ctl "auto=0 stats=1"
 bun tools/ipod.ts cook | deploy [--ipa FILE] | native [--pack] | launch | status | capture --out f.png | bench --seconds 60
 bun tools/ipod.ts ctl "mode=play auto=1"
 
+# A browser tab (wasm32-unknown-unknown and wasm-bindgen 0.2.126; Chrome for `check`)
+bun tools/wgpu.ts cook | build | serve [--port 8801] | dist | check [--dist]
+bun tools/wgpu.ts shot --frames 600 --words "mode=play auto=1" --out f.png   # a frame on this machine's GPU
+bun tools/listing.ts [--upload]        # the listing's clips and stills → dist/listing/
+
 # Packages for Pocket Studio (Releases, below)
 bun tools/release.ts [--targets vita,psp,3ds,ipod-touch] [--no-build] [--upload]
 
@@ -262,7 +280,8 @@ bun tools/ui.ts preview [device…]      # every screen as a picture → .pocket
 bun tools/ui.ts test                   # the flow against a mock renderer, on every device's bundle
 
 cargo test --workspace
-bun test ./tools                       # no icon file in the repository and every build names PocketJS's; the check on the Vita's programs
+cargo test --manifest-path wgpu/Cargo.toml
+bun test ./tools                       # no icon file in the repository and every build names PocketJS's; the check on the Vita's programs; the browser build's page and the listing's words
 cargo run --release -p maneuver-sim --bin harness -- .pocket-build/world/ir/world.mvsw 600 [--wav out.wav]
 ```
 
@@ -316,8 +335,10 @@ Starting a package without a development link: `bun tools/psp.ts emu --standalon
 | `psp/` | PSP program: GE renderer, cell reader, exact-size memory, the interface's guest, sound; the XMB background under `psp/assets` |
 | `n3ds/` | 3DS program: C host and renderer, PICA shaders, the Rust core |
 | `ipod/` | iPod touch program: C shell and OpenGL ES 2 renderer; `core/` builds the 3DS core's source for the device |
+| `wgpu/` | the browser's program: the wgpu renderer (the PS Vita's passes in WGSL), the shell around the simulation, the page, and the program that writes frames to files |
+| `listing/` | the words of the game's listing on Pocket Studio, and how each of its pictures is recorded |
 | `profiles/` | compile profiles |
-| `tools/` | `maneuver.ts`, `vita.ts`, `psp.ts`, `n3ds.ts`, `ipod.ts`, `ui.ts`, `bench.ts`, `shot.ts`, `release.ts` |
+| `tools/` | `maneuver.ts`, `vita.ts`, `psp.ts`, `n3ds.ts`, `ipod.ts`, `ui.ts`, `wgpu.ts`, `listing.ts`, `bench.ts`, `shot.ts`, `release.ts` |
 
 ## Not done
 
@@ -327,7 +348,8 @@ Starting a package without a development link: `bun tools/psp.ts emu --standalon
 - The 3DS's CSND sound path and the PSP's sound have not been heard by a person; the Vita's sound has been checked for level, not by ear.
 - The numbers come from the autopilot. Wire pull, gas economy, reach and camera rates are set from simulated runs and have not been tuned by hand on a console.
 - No stereoscopic 3D on the 3DS: a second eye doubles the 8 to 10 ms of GPU time per frame.
-- The reference lights with a shadow map; the devices show the bake. The web app does not draw a cooked pack yet, so comparing the two is by eye.
+- The reference lights with a shadow map; the devices show the bake. `wgpu/` draws the PS Vita's cooked pack on the build machine, but no tool compares its frame with a capture from the console yet.
+- The browser tab reads the whole pack (30.7 MB) before its first frame of the world: 17.7 s on a line of 16 Mbit/s. It has been run in Chrome on one Mac; no other browser, no phone and no other GPU has drawn it, and nobody has judged its sound by ear.
 - The town has no townsfolk, carts or birds.
 
 ## License
