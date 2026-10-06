@@ -10,7 +10,7 @@
     "dev": "bun tools/maneuver.ts sim && bun run --cwd web dev",
     "ui": "bun tools/ui.ts",
     "typecheck": "bunx tsc --noEmit -p web && bunx tsc --noEmit -p ui",
-    "test": "cargo test --workspace && bun tools/ui.ts test && bun test ./tools/icon.test.ts"
+    "test": "cargo test --workspace && bun tools/ui.ts test && bun test ./tools"
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

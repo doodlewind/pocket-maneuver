@@ -14,6 +14,7 @@ description = "Pocket Maneuver on PSP: the GE renderer, on-demand cells, the int
 psp = { git = "https://github.com/pocket-nexus/rust-psp.git", rev = "2cbaf8c9bc72569c76240a1d9743de10731e5f6b", features = ["external-c-heap", "abort-only", "external-global-alloc"] }
 libquickjs-sys = { git = "https://github.com/pocket-nexus/quickjs-rs.git", rev = "ba5bdd0dc013518768e76cd9e05cd30ed53dd35b" }
 pocketjs-psp = { path = "../vendor/pocketjs/hosts/psp" }
+pocket-psp-ge = { path = "../vendor/pocketjs/devices/psp/pocket-psp-ge" }
 maneuver-interface = { path = "../crates/maneuver-interface", default-features = false, features = ["guest"] }
 # The Allegrex FPU has no doubles: single-precision kernels and its own square root.
 maneuver-sim = { path = "../crates/maneuver-sim", default-features = false, features = ["hw-sqrt", "single-float"] }
