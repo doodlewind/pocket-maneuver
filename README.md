@@ -2,6 +2,8 @@
 
 A traversal game for the PS Vita, the PSP, the Nintendo 3DS and the iPod touch 4: two wire hooks, a tank of compressed gas and a walled town of about 5 400 houses, at **60 frames per second**. A browser tab plays it too: the same simulation compiled to wasm32, with a wgpu renderer that draws the PS Vita's pack.
 
+It plays in a browser at [maneuver.studio.pocket.nexus](https://maneuver.studio.pocket.nexus). Its page on Pocket Studio, [studio.pocket.nexus/games/maneuver](https://studio.pocket.nexus/games/maneuver), has recordings and the packages for each device, which members download.
+
 The player fires a wire from each hip into a wall or a roof, is pulled along it, lets go and fires the next. Gas reels a wire in faster, or thrusts when no wire holds. Thirty-two giants, 10 to 16 m tall, stand in the streets and among the trees outside the wall; a giant falls when the player cuts the nape of its neck at speed.
 
 | | Screen | Renderer | Measured |
