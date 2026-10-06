@@ -143,7 +143,7 @@ for (const entry of source.media) {
     refuse(`${entry.file}: ${seen.duration} s`, seen.duration >= LIMIT.seconds[0]! && seen.duration <= LIMIT.seconds[1]!);
     refuse(`${entry.file}: ${seen.bytes} bytes`, seen.bytes <= LIMIT.clip);
     refuse(`${entry.poster}: its name, or not the clip's size`, named(entry.poster!) && entry.poster!.endsWith(".jpg") && poster.width === seen.width && poster.height === seen.height);
-    media.push({ kind: "video", file: entry.file, poster: entry.poster, width: seen.width, height: seen.height, seconds: +seen.duration.toFixed(1), from: "browser", caption: entry.caption });
+    media.push({ kind: "video", file: entry.file, poster: entry.poster, width: seen.width, height: seen.height, seconds: Math.round(seen.duration), from: "browser", caption: entry.caption });
   } else {
     refuse(`${entry.file}: ${seen.bytes} bytes`, seen.bytes <= LIMIT.still);
     media.push({ kind: "image", file: entry.file, width: seen.width, height: seen.height, from: "browser", caption: entry.caption });
