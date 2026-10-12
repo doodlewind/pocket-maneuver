@@ -160,7 +160,7 @@ const TYPES: Record<string, string> = { html: "text/html; charset=utf-8", js: "t
 const OPENED = "/api/events/player";
 const opens: { query: string; mode: string }[] = [];
 const APP = {
-  kind: "site", id: "local", slug: null, url: null, title: "Pocket Maneuver", author: "local", tagline: "Two wires, a tank of gas, a walled town.", verified: true, status: "published",
+  kind: "site", id: "local", slug: "maneuver", url: null, title: "Pocket Maneuver", author: "local", tagline: "Two wires, a tank of gas, a walled town.", verified: true, status: "published", remixable: true,
   packages: [{ target: "psp", filename: "pocket-maneuver-0.1.0-psp.zip", size: 21_000_000, version: "0.1.0" }, { target: "3ds", filename: "pocket-maneuver-0.1.0.3dsx", size: 30_000_000, version: "0.1.0" }],
 };
 
@@ -610,16 +610,24 @@ if (command === "cook") {
         else await p.page.mouse.move(mark.x + mark.width / 2, mark.y + mark.height / 2);
         await p.page.waitForTimeout(300);
         const said = (await p.page.evaluate(`(() => { const tip = document.getElementById("pocket-simulated"); return { hidden: tip.hidden, text: tip.textContent }; })()`)) as Record<string, any>;
-        expect(`${tag}: the mark says the picture is simulated, and how this device's differs (${JSON.stringify(said)})`, said.hidden === false && said.text.includes("Your browser draws this picture") && said.text.includes("PS Vita build's"));
+        expect(`${tag}: the mark says the picture is simulated, in the player's one sentence (${JSON.stringify(said)})`, said.hidden === false && said.text.startsWith("Your browser draws this picture") && said.text.endsWith("differently there."));
         if (window.name === "1440") await p.page.screenshot({ path: join(directory, `player-${id}-simulated.png`) });
         if (window.coarse) await p.page.touchscreen.tap(mark.x + mark.width / 2, mark.y + mark.height / 2);
         else await p.page.mouse.move(4, seen.view[1] / 2);
 
-        // The door to Pocket Studio: the game's card there, and the Studio's own front door.
-        const door = (await p.page.evaluate(`({ get: document.querySelector('[data-pocket-action=get]').href, make: document.querySelector('[data-pocket-action=make]').href, words: document.querySelector('[data-pocket-pitch]').textContent })`)) as Record<string, any>;
+        // The dock: Download and Remix, each an icon and a word, to the game's page in Pocket Studio. The
+        // server here names the game's address (`slug`) and says it can be remixed; the deployable
+        // directory's has no /app.json, so its page knows the Studio alone and has the one link to it.
+        const door = (await p.page.evaluate(`(() => { const of = (action) => { const link = document.querySelector('[data-pocket-action=' + action + ']'); return { href: link.href, text: link.textContent, shown: !link.hidden && link.getBoundingClientRect().width > 40, icon: !!link.querySelector('svg') }; }; const dock = document.querySelector('[data-pocket-studio]'); return { get: of('get'), remix: of('remix'), make: of('make'), words: dock.textContent, hosted: dock.hasAttribute('data-pocket-hosted'), height: dock.getBoundingClientRect().height }; })()`)) as Record<string, any>;
         report.player.door ??= door;
-        const card = deployed ? (deployed.studio ? `${deployed.studio.server}/studio/?app=${deployed.studio.app}&from=player` : "https://studio.pocket.nexus/?from=player") : "https://studio.pocket.nexus/studio/?app=local&from=player";
-        expect(`${tag}: the door leads to the game in Pocket Studio (${JSON.stringify(door)}, wanted ${card})`, door.get === card && door.words.includes("Pocket Maneuver is built for PSP, PS Vita, Nintendo 3DS and iPod touch."));
+        const studio = deployed?.studio?.server ?? "https://studio.pocket.nexus";
+        expect(`${tag}: the dock has no heading and no sentence (${JSON.stringify(door.words)}, ${door.height} px)`, !door.hosted && door.height < 72 && !/built for|real thing|packages/i.test(door.words));
+        if (deployed) {
+          expect(`${tag}: Download leads to Pocket Studio (${JSON.stringify(door)})`, door.get.shown && door.get.icon && door.get.text === "Download" && door.get.href === `${studio}/?from=player` && !door.remix.shown && !door.make.shown);
+        } else {
+          expect(`${tag}: Download leads to the game's page with its files open (${JSON.stringify(door.get)})`, door.get.shown && door.get.icon && door.get.text === "Download" && door.get.href === "https://studio.pocket.nexus/games/maneuver?get=&from=player");
+          expect(`${tag}: Remix leads to the game's page with its remix open (${JSON.stringify(door.remix)})`, door.remix.shown && door.remix.icon && door.remix.text === "Remix" && door.remix.href === "https://studio.pocket.nexus/games/maneuver?remix=&from=player" && !door.make.shown);
+        }
 
         // From the title into play by the shell's own key, which goes down while it is held; an iPod touch
         // has none: its screen is under the finger.
