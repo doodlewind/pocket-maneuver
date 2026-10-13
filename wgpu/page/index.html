@@ -8,6 +8,9 @@
 <link rel="icon" href="icon.png">
 <!-- The pack: its file, on a server that answers byte ranges, or the manifest of a pack cut into pieces. -->
 <meta name="pocket-pack" content="world.pack">
+<!-- The devices the page plays as, as Pocket Studio names a package's target: `pocket-studio site` and
+     `pocket-studio package` read it. A device with a package is a device here (tools/platforms.test.ts). -->
+<meta name="pocket-devices" content="vita psp 3ds ipod-touch">
 <!-- The page is the Pocket3D player of PocketJS's browser kernel, which builds everything in the body:
      these two files are its layout and its look. -->
 <link rel="stylesheet" href="pocket3d-stage.css">
